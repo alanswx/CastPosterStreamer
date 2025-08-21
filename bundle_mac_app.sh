@@ -10,3 +10,6 @@ pip install -r requirements.txt
 
 # Finally, run the build command again
 python setup.py py2app --semi-standalone
+
+# Sign the application
+codesign --force --verify --verbose --sign "Apple Development: Alan Steremberg (DALPRRY8F7)" "dist/Posters.app"
