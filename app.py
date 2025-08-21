@@ -9,6 +9,8 @@ from settings_manager import SettingsManager
 from chromecast_manager import ChromecastManager
 from slideshow_controller import SlideshowController
 
+# The 'DATA_FILES' setting in setup.py now correctly copies the 'templates'
+# and 'static' folders, so we can revert to the standard Flask configuration.
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'chromecast-slideshow-secret-key'
 socketio = SocketIO(app, cors_allowed_origins="*")
@@ -303,7 +305,7 @@ if __name__ == '__main__':
         # Discovery will be triggered when user clicks "Discover Devices" button
         
         logger.info("Starting Chromecast Slideshow Server...")
-        socketio.run(app, host='0.0.0.0', port=5001, debug=False)
+        socketio.run(app, host='0.0.0.0', port=5001, debug=False, allow_unsafe_werkzeug=True)
         
     except KeyboardInterrupt:
         logger.info("Shutting down...")

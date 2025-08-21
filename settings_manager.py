@@ -1,13 +1,24 @@
 import sqlite3
 import json
 import os
+import sys
 from typing import Optional, Dict, List, Any
 from pathlib import Path
 
 
 class SettingsManager:
     def __init__(self, db_path: str = "config.db"):
-        self.db_path = db_path
+        
+        # In a bundled app, the CWD may not be the script's location.
+        # We need to ensure the database is located in the same directory as the script.
+        if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS') is False:
+            # Py2App bundle
+            script_dir = Path(os.path.dirname(os.path.abspath(__file__)))
+        else:
+            # Development environment
+            script_dir = Path(os.path.dirname(os.path.abspath(__file__)))
+
+        self.db_path = script_dir / db_path
         self.init_database()
     
     def init_database(self):
