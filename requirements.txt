@@ -1,0 +1,8 @@
+Flask==2.3.3
+Flask-SocketIO==5.3.6
+catt==0.12.11
+PyChromecast==13.0.8
+Pillow==10.0.1
+python-socketio==5.9.0
+python-engineio==4.7.1
+pathlib

@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chromecast Slideshow Controller</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Chromecast Slideshow Controller</h1>
+            <div class="status-indicator">
+                <span id="connection-status" class="status-disconnected">Disconnected</span>
+            </div>
+        </header>
+
+        <main>
+            <!-- Directory Selection Section -->
+            <section class="panel">
+                <h2>Directory Selection</h2>
+                <div class="directory-browser">
+                    <div class="current-path">
+                        <label>Current Path:</label>
+                        <span id="current-path"></span>
+                    </div>
+                    <div class="directory-list" id="directory-list">
+                        <div class="loading">Loading directories...</div>
+                    </div>
+                    <button id="select-directory" class="btn btn-primary" disabled>Select This Directory</button>
+                </div>
+            </section>
+
+            <!-- Image Preview Section -->
+            <section class="panel">
+                <h2>Image Preview</h2>
+                <div class="image-info">
+                    <span>Selected Directory: <span id="selected-directory">None</span></span>
+                    <span>Images Found: <span id="image-count">0</span></span>
+                    <button id="refresh-images" class="btn btn-secondary">Refresh</button>
+                </div>
+                <div class="image-grid" id="image-grid">
+                    <div class="no-images">Select a directory containing images</div>
+                </div>
+            </section>
+
+            <!-- Device Selection Section -->
+            <section class="panel">
+                <h2>Chromecast Devices</h2>
+                <div class="device-actions">
+                    <button id="discover-devices" class="btn btn-secondary">Discover Devices</button>
+                    <span class="device-count">Found: <span id="device-count">0</span></span>
+                </div>
+                <div class="device-list" id="device-list">
+                    <div class="no-devices">No devices found. Click "Discover Devices" to search.</div>
+                </div>
+            </section>
+
+            <!-- Slideshow Controls Section -->
+            <section class="panel">
+                <h2>Slideshow Controls</h2>
+                <div class="controls">
+                    <div class="control-group">
+                        <label for="slideshow-interval">Interval (seconds):</label>
+                        <input type="number" id="slideshow-interval" min="1" max="3600" value="5">
+                    </div>
+                    <div class="control-group">
+                        <label>
+                            <input type="checkbox" id="rotation-enabled" checked> Enable Image Rotation
+                        </label>
+                        <div class="control-description">
+                            When disabled, images will be displayed once and remain static until manually changed.
+                        </div>
+                    </div>
+                    <div class="control-buttons">
+                        <button id="start-slideshow" class="btn btn-success" disabled>Start Slideshow</button>
+                        <button id="stop-slideshow" class="btn btn-danger" disabled>Stop Slideshow</button>
+                        <button id="skip-next" class="btn btn-secondary" disabled>Skip to Next</button>
+                    </div>
+                </div>
+                
+                <div class="slideshow-status" id="slideshow-status">
+                    <div class="status-item">
+                        <span class="label">Status:</span>
+                        <span id="slideshow-running" class="value">Stopped</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="label">Current Images:</span>
+                        <div id="current-images" class="current-images-list"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Error Log Section -->
+            <section class="panel">
+                <h2>Status & Error Log</h2>
+                <div class="log-controls">
+                    <button id="clear-log" class="btn btn-secondary">Clear Log</button>
+                    <label>
+                        <input type="checkbox" id="auto-scroll" checked> Auto-scroll
+                    </label>
+                </div>
+                <div class="log-container" id="log-container">
+                    <div class="log-entry info">
+                        <span class="timestamp">[Starting]</span>
+                        <span class="message">Chromecast Slideshow Controller loaded</span>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
