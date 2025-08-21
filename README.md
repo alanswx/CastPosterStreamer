@@ -23,7 +23,7 @@ A Python web application that displays images from your local directories as syn
 
 1. **Clone or download this project**:
    ```bash
-   cd GoogleTVPosterStreamer3
+   cd CastPosterStreamer 
    ```
 
 2. **Install Python dependencies**:
@@ -81,7 +81,7 @@ A Python web application that displays images from your local directories as syn
 ## File Structure
 
 ```
-GoogleTVPosterStreamer3/
+CastPosterStreamer/
 ├── app.py                  # Main Flask application
 ├── chromecast_manager.py   # Chromecast device discovery and communication
 ├── slideshow_controller.py # Image rotation logic and timing

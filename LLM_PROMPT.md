@@ -43,7 +43,7 @@ Create a Python-based Chromecast slideshow application with the following specif
 
 ## Project Structure
 ```
-GoogleTVPosterStreamer2/
+CastPosterStreamer/
 ├── app.py                 # Main Flask application
 ├── chromecast_manager.py  # Chromecast discovery & communication
 ├── slideshow_controller.py # Image rotation logic & timing
