@@ -160,7 +160,7 @@ class SlideshowController:
         
         self.logger.info("Slideshow stopped")
         if self.socketio:
-            self.socketio.emit('slideshow_status', {'running': False})
+            self.socketio.emit('slideshow_stopped')
     
     def _slideshow_loop(self):
         """Main slideshow loop that runs in a background thread."""
@@ -177,6 +177,9 @@ class SlideshowController:
                 
                 if not images or not enabled_devices:
                     self.logger.warning("No images or devices available, stopping slideshow")
+                    # Notify frontend that slideshow stopped
+                    if self.socketio:
+                        self.socketio.emit('slideshow_stopped')
                     break
                 
                 # Check if rotation is enabled
@@ -205,6 +208,10 @@ class SlideshowController:
         # Slideshow stopped
         with self._lock:
             self.is_slideshow_running = False
+        
+        # Always notify frontend when slideshow loop ends
+        if self.socketio:
+            self.socketio.emit('slideshow_stopped')
     
     def _distribute_images_to_devices(self, images: List[str], devices: List[Dict[str, Any]]):
         """Distribute images to devices ensuring each gets a unique image."""

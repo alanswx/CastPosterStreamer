@@ -82,10 +82,22 @@ class ChromecastSlideshowController {
             this.logMessage('Disconnected from server', 'error');
         });
         
+        this.socket.on('discovery_started', () => {
+            this.discoverDevicesBtn.disabled = true;
+            this.discoverDevicesBtn.textContent = 'Discovering...';
+            this.logMessage('Device discovery started...', 'info');
+        });
+        
         this.socket.on('devices_discovered', (devices) => {
-            this.devices = devices;
-            this.updateDeviceList();
-            this.logMessage(`Discovered ${devices.length} devices`, 'info');
+            this.logMessage(`Discovered ${devices.length} devices`, 'success');
+            // Reload devices from API to get proper enabled/online status
+            this.loadDevices();
+        });
+        
+        this.socket.on('discovery_finished', () => {
+            this.discoverDevicesBtn.disabled = false;
+            this.discoverDevicesBtn.textContent = 'Discover Devices';
+            this.logMessage('Device discovery completed', 'info');
         });
         
         this.socket.on('slideshow_started', () => {
@@ -264,19 +276,26 @@ class ChromecastSlideshowController {
         
         this.devices.forEach(device => {
             const div = document.createElement('div');
-            div.className = `device-item ${device.enabled ? 'enabled' : 'disabled'}`;
+            const statusClass = device.online ? 'online' : 'offline';
+            const enabledClass = device.enabled ? 'enabled' : 'disabled';
+            div.className = `device-item ${enabledClass} ${statusClass}`;
             div.setAttribute('data-uuid', device.uuid);
+            
+            const statusIndicator = device.online ? '🟢' : '🔴';
+            const statusText = device.online ? 'Online' : 'Offline';
             
             div.innerHTML = `
                 <div class="device-info">
-                    <h4>${device.name}</h4>
+                    <h4>${device.name} ${statusIndicator}</h4>
                     <div class="device-details">
-                        ${device.host}:${device.port} • ${device.model || 'Chromecast'}
+                        ${device.host}:${device.port} • ${device.model || 'Chromecast'} • ${statusText}
+                        ${device.last_seen ? `<br><small>Last seen: ${device.last_seen}</small>` : ''}
                     </div>
                 </div>
                 <div class="device-toggle">
                     <input type="checkbox" ${device.enabled ? 'checked' : ''} 
-                           onchange="controller.toggleDevice('${device.uuid}', this.checked)">
+                           onchange="controller.toggleDevice('${device.uuid}', this.checked)"
+                           ${!device.online ? 'title="Device is offline"' : ''}>
                     <label>Enable</label>
                 </div>
             `;
@@ -318,16 +337,8 @@ class ChromecastSlideshowController {
     }
     
     async discoverDevices() {
-        this.discoverDevicesBtn.disabled = true;
-        this.discoverDevicesBtn.textContent = 'Discovering...';
-        this.logMessage('Starting device discovery...', 'info');
-        
+        // Button state will be managed by WebSocket events
         this.socket.emit('discover_devices');
-        
-        setTimeout(() => {
-            this.discoverDevicesBtn.disabled = false;
-            this.discoverDevicesBtn.textContent = 'Discover Devices';
-        }, 5000);
     }
     
     async startSlideshow() {
