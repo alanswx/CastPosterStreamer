@@ -101,10 +101,20 @@ class SettingsManager:
             cursor.execute("SELECT key, value FROM settings")
             return dict(cursor.fetchall())
     
-    def save_device(self, uuid: str, name: str, host: str, port: int, enabled: bool = True):
+    def save_device(self, uuid: str, name: str, host: str, port: int, enabled: bool = None):
         """Save or update a Chromecast device."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
+            
+            # Check if device already exists
+            cursor.execute("SELECT enabled FROM devices WHERE uuid = ?", (str(uuid),))
+            existing = cursor.fetchone()
+            
+            # If device exists and enabled is not explicitly set, preserve existing state
+            # If device is new and enabled is not explicitly set, default to False
+            if enabled is None:
+                enabled = bool(existing[0]) if existing else False
+            
             cursor.execute("""
                 INSERT OR REPLACE INTO devices (uuid, name, host, port, enabled, last_seen)
                 VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)

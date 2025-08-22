@@ -105,14 +105,15 @@ class ChromecastManager:
             if uuid in device_settings:
                 device['enabled'] = bool(device_settings[uuid]['enabled'])
             else:
-                device['enabled'] = True
+                # New devices default to disabled - user must explicitly enable them
+                device['enabled'] = False
         
         return devices
     
     def get_enabled_devices(self) -> List[Dict[str, Any]]:
         """Get only enabled devices."""
         all_devices = self.get_all_devices()
-        return [d for d in all_devices if d.get('enabled', True)]
+        return [d for d in all_devices if d.get('enabled', False)]
     
     def get_device_by_uuid(self, uuid: str) -> Optional[Dict[str, Any]]:
         """Get a specific device by UUID."""
