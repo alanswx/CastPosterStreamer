@@ -122,7 +122,7 @@ def get_images():
 def serve_thumbnail(filename):
     """Serve thumbnail images."""
     try:
-        thumbnail_dir = os.path.join(os.path.dirname(__file__), 'static', 'thumbnails')
+        thumbnail_dir = str(settings_manager.get_thumbnail_dir())
         
         # Find thumbnail by original filename
         directory = settings_manager.get_selected_directory()

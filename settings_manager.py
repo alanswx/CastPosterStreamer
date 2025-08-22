@@ -2,24 +2,34 @@ import sqlite3
 import json
 import os
 import sys
+import shutil
 from typing import Optional, Dict, List, Any
 from pathlib import Path
 
 
 class SettingsManager:
-    def __init__(self, db_path: str = "config.db"):
+    def __init__(self, db_name: str = "config.db", menu_config_name: str = "menu_config.json"):
         
-        # In a bundled app, the CWD may not be the script's location.
-        # We need to ensure the database is located in the same directory as the script.
-        if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS') is False:
-            # Py2App bundle
-            script_dir = Path(os.path.dirname(os.path.abspath(__file__)))
-        else:
-            # Development environment
-            script_dir = Path(os.path.dirname(os.path.abspath(__file__)))
-
-        self.db_path = script_dir / db_path
+        # Use proper macOS directories
+        self.app_support_dir = Path.home() / "Library" / "Application Support" / "Posters"
+        self.cache_dir = Path.home() / "Library" / "Caches" / "Posters"
+        self.logs_dir = Path.home() / "Library" / "Logs" / "Posters"
+        
+        # Create directories if they don't exist
+        self.app_support_dir.mkdir(parents=True, exist_ok=True)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Set file paths
+        self.db_path = self.app_support_dir / db_name
+        self.menu_config_path = self.app_support_dir / menu_config_name
+        
+        # Migrate existing files if needed
+        self._migrate_existing_files()
+        
+        # Initialize database and config
         self.init_database()
+        self.init_menu_config()
     
     def init_database(self):
         """Initialize the SQLite database with required tables."""
@@ -162,3 +172,89 @@ class SettingsManager:
         """Check if image rotation is enabled."""
         enabled = self.get_setting('rotation_enabled')
         return enabled and enabled.lower() == 'true'
+    
+    def _migrate_existing_files(self):
+        """Migrate existing files from old locations to new proper locations."""
+        # Get script directory (where old files might be)
+        if getattr(sys, 'frozen', False):
+            # Bundled app - check Resources directory
+            script_dir = Path(os.path.dirname(os.path.abspath(__file__)))
+        else:
+            # Development environment
+            script_dir = Path(os.path.dirname(os.path.abspath(__file__)))
+        
+        # Migrate database
+        old_db_path = script_dir / "config.db"
+        if old_db_path.exists() and not self.db_path.exists():
+            try:
+                shutil.copy2(old_db_path, self.db_path)
+                print(f"Migrated database from {old_db_path} to {self.db_path}")
+            except Exception as e:
+                print(f"Warning: Could not migrate database: {e}")
+        
+        # Migrate menu config
+        old_menu_config = script_dir / "menu_config.json"
+        if old_menu_config.exists() and not self.menu_config_path.exists():
+            try:
+                shutil.copy2(old_menu_config, self.menu_config_path)
+                print(f"Migrated menu config from {old_menu_config} to {self.menu_config_path}")
+            except Exception as e:
+                print(f"Warning: Could not migrate menu config: {e}")
+        
+        # Migrate thumbnails
+        old_thumbnail_dir = script_dir / "static" / "thumbnails"
+        new_thumbnail_dir = self.cache_dir / "thumbnails"
+        if old_thumbnail_dir.exists() and not new_thumbnail_dir.exists():
+            try:
+                shutil.copytree(old_thumbnail_dir, new_thumbnail_dir)
+                print(f"Migrated thumbnails from {old_thumbnail_dir} to {new_thumbnail_dir}")
+            except Exception as e:
+                print(f"Warning: Could not migrate thumbnails: {e}")
+    
+    def init_menu_config(self):
+        """Initialize menu configuration file with defaults if it doesn't exist."""
+        if not self.menu_config_path.exists():
+            default_config = {
+                "port": 5002
+            }
+            try:
+                with open(self.menu_config_path, 'w') as f:
+                    json.dump(default_config, f, indent=2)
+                print(f"Created default menu config at {self.menu_config_path}")
+            except Exception as e:
+                print(f"Warning: Could not create menu config: {e}")
+    
+    def get_menu_config(self) -> Dict[str, Any]:
+        """Get menu configuration as a dictionary."""
+        try:
+            if self.menu_config_path.exists():
+                with open(self.menu_config_path, 'r') as f:
+                    return json.load(f)
+            else:
+                # Return defaults if file doesn't exist
+                return {"port": 5002}
+        except Exception as e:
+            print(f"Warning: Could not read menu config: {e}")
+            return {"port": 5002}
+    
+    def save_menu_config(self, config: Dict[str, Any]):
+        """Save menu configuration to file."""
+        try:
+            with open(self.menu_config_path, 'w') as f:
+                json.dump(config, f, indent=2)
+        except Exception as e:
+            print(f"Error: Could not save menu config: {e}")
+    
+    def get_cache_dir(self) -> Path:
+        """Get the cache directory path."""
+        return self.cache_dir
+    
+    def get_logs_dir(self) -> Path:
+        """Get the logs directory path."""
+        return self.logs_dir
+    
+    def get_thumbnail_dir(self) -> Path:
+        """Get the thumbnail cache directory path."""
+        thumbnail_dir = self.cache_dir / "thumbnails"
+        thumbnail_dir.mkdir(exist_ok=True)
+        return thumbnail_dir

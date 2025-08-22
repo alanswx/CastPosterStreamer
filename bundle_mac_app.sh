@@ -9,7 +9,7 @@ pip install --upgrade pip
 pip install -r requirements.txt
 
 # Finally, run the build command again
-python setup.py py2app 
+python setup.py py2app --arch=universal2
 
 # Sign the application
 codesign --force --verify --verbose --sign "Apple Development: Alan Steremberg (DALPRRY8F7)" "dist/Posters.app"

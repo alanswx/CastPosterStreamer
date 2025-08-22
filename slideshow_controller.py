@@ -58,7 +58,7 @@ class SlideshowController:
     def generate_thumbnail(self, image_path: str, thumbnail_dir: str = None) -> Optional[str]:
         """Generate a thumbnail for the given image."""
         if thumbnail_dir is None:
-            thumbnail_dir = os.path.join(os.path.dirname(__file__), 'static', 'thumbnails')
+            thumbnail_dir = str(self.settings_manager.get_thumbnail_dir())
         
         # Create thumbnail directory if it doesn't exist
         os.makedirs(thumbnail_dir, exist_ok=True)

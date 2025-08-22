@@ -11,16 +11,25 @@ import urllib.request
 from pathlib import Path
 import threading
 
+# Import settings manager to get proper directories
+from settings_manager import SettingsManager
+
 # When bundled, the CWD is often '/', which can cause issues for file access.
 # This changes the CWD to the app's Resources folder.
 if getattr(sys, 'frozen', False):
     executable_path = os.path.dirname(sys.executable)
     resources_path = os.path.abspath(os.path.join(executable_path, '..', 'Resources'))
     os.chdir(resources_path)
-    # Use a different log file for bundled app to avoid confusion
-    log_file = Path.home() / "Desktop" / "Posters_bundle.log"
+
+# Initialize settings manager to get proper log directory
+temp_settings = SettingsManager()
+logs_dir = temp_settings.get_logs_dir()
+
+# Set up log file in proper location
+if getattr(sys, 'frozen', False):
+    log_file = logs_dir / "app_bundle.log"
 else:
-    log_file = Path.home() / "Desktop" / "Posters_debug.log"
+    log_file = logs_dir / "app_debug.log"
 
 # Set up logging to file
 logging.basicConfig(
@@ -101,9 +110,29 @@ class PosterApp(rumps.App):
                 logger.info(f"Starting server with Python: {sys.executable}")
                 self.status_item.title = "Server Status: Starting..."
                 
-                # Use system Python but with virtual environment packages
-                logger.info("Using system Python with bundled packages")
+                # Try to use bundled Python, fallback to system Python if bundled fails
                 python_cmd = sys.executable
+                
+                # Check if we're in a bundle and the bundled Python might be broken
+                if getattr(sys, 'frozen', False):
+                    # Test if bundled python exists and works
+                    if not os.path.exists(python_cmd):
+                        logger.warning(f"Bundled Python not found at {python_cmd}, using system Python")
+                        python_cmd = '/usr/bin/python3'
+                    else:
+                        try:
+                            test_result = subprocess.run([python_cmd, '--version'], 
+                                                       capture_output=True, timeout=5)
+                            if test_result.returncode != 0:
+                                logger.warning("Bundled Python is broken, falling back to system Python")
+                                python_cmd = '/usr/bin/python3'
+                            else:
+                                logger.info("Using bundled Python")
+                        except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError) as e:
+                            logger.warning(f"Bundled Python test failed: {e}, using system Python")
+                            python_cmd = '/usr/bin/python3'
+                else:
+                    logger.info("Using development Python")
                 
                 # Check architecture and build command
                 import platform
@@ -120,13 +149,17 @@ class PosterApp(rumps.App):
                 env = os.environ.copy()
                 env['ARCHFLAGS'] = '-arch arm64' if platform.machine() == 'arm64' else '-arch x86_64'
                 
-                # Always use bundled virtual environment packages
+                # Use bundled packages when available
                 venv_site_packages = Path(__file__).parent / "lib" / "python3.9"
                 if venv_site_packages.exists():
                     env['PYTHONPATH'] = f"{venv_site_packages}:{env.get('PYTHONPATH', '')}"
                     logger.info(f"Added to PYTHONPATH: {venv_site_packages}")
                 else:
                     logger.warning("Bundled packages not found, using system packages")
+                    
+                # If using system Python, make sure to install required packages
+                if python_cmd == '/usr/bin/python3' and getattr(sys, 'frozen', False):
+                    logger.info("Using system Python with bundled packages from app bundle")
                 
                 # Start with output capture for debugging
                 self.server_process = subprocess.Popen(

@@ -12,8 +12,6 @@ DATA_FILES = [
     'slideshow_controller.py',
     'image_server.py',
     'requirements.txt',
-    'config.db',
-    'menu_config.json',
     'chromecast_subprocess.py',
     ('static', glob('static/**/*', recursive=True)),
     ('templates', glob('templates/**/*.*', recursive=True)),
@@ -21,9 +19,11 @@ DATA_FILES = [
 
 OPTIONS = {
     'argv_emulation': False,
+    'alias': False,  # Create standalone bundle instead of alias
     'site_packages': True,
     'strip': False,
     'iconfile': 'Posters.icns',
+    'frameworks': [],  # Don't bundle frameworks separately
     'plist': {
         'CFBundleName': 'Posters',
         'CFBundleDisplayName': 'Posters', 
