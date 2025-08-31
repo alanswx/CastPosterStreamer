@@ -28,22 +28,31 @@
                     <div class="directory-list" id="directory-list">
                         <div class="loading">Loading directories...</div>
                     </div>
-                    <button id="select-directory" class="btn btn-primary" disabled>Select This Directory</button>
+                    <div class="directory-preview">
+                        <div class="directory-thumbnail-grid" id="directory-thumbnails">
+                            <div class="no-preview">Browse to a directory to see preview</div>
+                        </div>
+                    </div>
+                    <button id="add-directory-to-playlist" class="btn btn-primary" disabled>Add This Directory to Playlist</button>
                 </div>
             </section>
 
-            <!-- Image Preview Section -->
+            <!-- Playlist Management Section -->
             <section class="panel">
-                <h2>Image Preview</h2>
-                <div class="image-info">
-                    <span>Selected Directory: <span id="selected-directory">None</span></span>
-                    <span>Images Found: <span id="image-count">0</span></span>
-                    <button id="refresh-images" class="btn btn-secondary">Refresh</button>
+                <h2>📋 Playlist Management</h2>
+                <div class="playlist-info">
+                    <span>Active Playlist: <span id="playlist-count">0</span> items, <span id="playlist-duration">0</span> min total</span>
+                    <button id="clear-playlist" class="btn btn-secondary">Clear Playlist</button>
                 </div>
-                <div class="image-grid" id="image-grid">
-                    <div class="no-images">Select a directory containing images</div>
+                
+                <div class="playlist-container">
+                    <div class="playlist-list" id="playlist-list">
+                        <div class="no-playlist-items">No items in playlist. Browse to a directory above and click "Add This Directory to Playlist".</div>
+                    </div>
                 </div>
+                
             </section>
+
 
             <!-- Device Selection Section -->
             <section class="panel">
@@ -62,10 +71,10 @@
                 <h2>Slideshow Controls</h2>
                 <div class="controls">
                     <div class="control-group">
-                        <label for="slideshow-interval">Interval (seconds):</label>
+                        <label for="slideshow-interval">Image Change Interval (seconds):</label>
                         <input type="number" id="slideshow-interval" min="1" max="3600" value="5">
                     </div>
-                    <div class="control-group">
+                    <div class="control-group" style="display: none;">
                         <label>
                             <input type="checkbox" id="rotation-enabled" checked> Enable Image Rotation
                         </label>
@@ -73,10 +82,18 @@
                             When disabled, images will be displayed once and remain static until manually changed.
                         </div>
                     </div>
-                    <div class="control-buttons">
-                        <button id="start-slideshow" class="btn btn-success" disabled>Start Slideshow</button>
-                        <button id="stop-slideshow" class="btn btn-danger" disabled>Stop Slideshow</button>
-                        <button id="skip-next" class="btn btn-secondary" disabled>Skip to Next</button>
+                    
+                    <div class="control-modes">
+                        <h3>Start Slideshow</h3>
+                        <div class="control-buttons">
+                            <button id="start-single-directory" class="btn btn-success" disabled style="visibility: hidden; position: absolute;">▶️ Current Directory Only</button>
+                            <button id="start-playlist" class="btn btn-success" disabled>▶️ Start Playlist</button>
+                        </div>
+                        <div class="control-buttons">
+                            <button id="pause-slideshow" class="btn btn-warning" disabled>⏸️ Pause</button>
+                            <button id="skip-slideshow" class="btn btn-secondary" disabled>⏭️ Skip</button>
+                            <button id="stop-slideshow" class="btn btn-danger" disabled>⏹️ Stop</button>
+                        </div>
                     </div>
                 </div>
                 
@@ -86,8 +103,12 @@
                         <span id="slideshow-running" class="value">Stopped</span>
                     </div>
                     <div class="status-item">
-                        <span class="label">Current Images:</span>
-                        <div id="current-images" class="current-images-list"></div>
+                        <span class="label">Mode:</span>
+                        <span id="slideshow-mode" class="value">None</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="label">Progress:</span>
+                        <div id="slideshow-progress" class="progress-display"></div>
                     </div>
                 </div>
             </section>

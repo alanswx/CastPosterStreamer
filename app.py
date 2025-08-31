@@ -1,5 +1,5 @@
 from flask import Flask, render_template, request, jsonify
-from flask_socketio import SocketIO, emit
+from flask_socketio import SocketIO, emit, join_room
 import os
 import threading
 import logging
@@ -122,15 +122,64 @@ def get_images():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/directory-images', methods=['GET'])
+def get_directory_images():
+    """Get images from a specific directory for preview."""
+    directory = request.args.get('path')
+    if not directory:
+        return jsonify({'error': 'No directory path provided'}), 400
+    
+    try:
+        images = slideshow_controller.get_images_in_directory(directory)
+        image_data = []
+        
+        # Limit to first 8 images for preview
+        preview_images = images[:8]
+        
+        for img_path in preview_images:
+            img_name = os.path.basename(img_path)
+            # Generate thumbnail for this specific image
+            thumbnail_path = slideshow_controller.generate_thumbnail(img_path)
+            
+            image_data.append({
+                'name': img_name,
+                'path': img_path,
+                'has_thumbnail': thumbnail_path is not None
+            })
+        
+        return jsonify({
+            'directory': directory,
+            'images': image_data,
+            'count': len(images),
+            'total_count': len(images)
+        })
+    except Exception as e:
+        logger.error(f"Error getting images from {directory}: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/thumbnails/<filename>')
 def serve_thumbnail(filename):
     """Serve thumbnail images."""
     try:
         thumbnail_dir = str(settings_manager.get_thumbnail_dir())
         
+        # Check if a specific directory is requested via query parameter
+        requested_dir = request.args.get('dir')
+        if requested_dir:
+            directory = requested_dir
+        else:
+            # Fall back to selected directory
+            directory = settings_manager.get_selected_directory()
+            
+        if not directory:
+            return "No directory specified", 400
+        
         # Find thumbnail by original filename
-        directory = settings_manager.get_selected_directory()
         original_path = os.path.join(directory, filename)
+        if not os.path.exists(original_path):
+            return "Image not found", 404
+            
         thumbnail_path = slideshow_controller.generate_thumbnail(original_path, thumbnail_dir)
         
         if thumbnail_path and os.path.exists(thumbnail_path):
@@ -143,6 +192,7 @@ def serve_thumbnail(filename):
     except Exception as e:
         logger.error(f"Error serving thumbnail for {filename}: {e}")
         return "Error generating thumbnail", 500
+
 
 
 @app.route('/api/devices', methods=['GET'])
@@ -230,10 +280,223 @@ def get_slideshow_status():
     })
 
 
+@app.route('/api/slideshow/skip', methods=['POST'])
+def skip_slideshow():
+    """Skip to next image in single directory slideshow."""
+    try:
+        if slideshow_controller.skip_to_next():
+            return jsonify({'status': 'success'})
+        else:
+            return jsonify({'error': 'No slideshow running'}), 400
+    except Exception as e:
+        logger.error(f"Error skipping slideshow: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# Playlist API endpoints
+@app.route('/api/playlist', methods=['GET'])
+def get_playlist():
+    """Get current playlist items."""
+    items = settings_manager.get_playlist_items()
+    total_duration = settings_manager.get_playlist_total_duration()
+    return jsonify({
+        'items': items,
+        'total_duration': total_duration,
+        'item_count': len(items)
+    })
+
+
+@app.route('/api/playlist/items', methods=['POST'])
+def add_playlist_item():
+    """Add current directory to playlist."""
+    try:
+        current_dir = settings_manager.get_selected_directory()
+        if not current_dir:
+            return jsonify({'error': 'No directory selected'}), 400
+        
+        # Get directory name for display
+        directory_name = os.path.basename(current_dir) or current_dir
+        
+        # Default duration
+        duration = 10
+        
+        item_id = settings_manager.add_playlist_item(current_dir, directory_name, duration)
+        socketio.emit('playlist_updated')
+        
+        return jsonify({
+            'status': 'success',
+            'item_id': item_id
+        })
+    except Exception as e:
+        logger.error(f"Error adding playlist item: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/playlist/items/<int:item_id>', methods=['DELETE'])
+def remove_playlist_item(item_id):
+    """Remove an item from the playlist."""
+    try:
+        settings_manager.remove_playlist_item(item_id)
+        socketio.emit('playlist_updated')
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logger.error(f"Error removing playlist item: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/playlist/items/<int:item_id>/duration', methods=['PUT'])
+def update_playlist_item_duration(item_id):
+    """Update the duration of a playlist item."""
+    data = request.get_json()
+    duration = data.get('duration_minutes')
+    
+    if not duration or duration < 1:
+        return jsonify({'error': 'Invalid duration'}), 400
+    
+    try:
+        settings_manager.update_playlist_item_duration(item_id, duration)
+        socketio.emit('playlist_updated')
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logger.error(f"Error updating playlist item duration: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/playlist/reorder', methods=['PUT'])
+def reorder_playlist():
+    """Reorder playlist items."""
+    data = request.get_json()
+    item_ids = data.get('item_ids', [])
+    
+    if not item_ids:
+        return jsonify({'error': 'No item IDs provided'}), 400
+    
+    try:
+        settings_manager.reorder_playlist_items(item_ids)
+        socketio.emit('playlist_updated')
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logger.error(f"Error reordering playlist: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/playlist/clear', methods=['DELETE'])
+def clear_playlist():
+    """Clear all items from the playlist."""
+    try:
+        settings_manager.clear_playlist()
+        socketio.emit('playlist_updated')
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logger.error(f"Error clearing playlist: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/playlist/start', methods=['POST'])
+def start_playlist():
+    """Start playlist mode slideshow."""
+    try:
+        result = slideshow_controller.start_playlist()
+        logger.info(f"Start playlist result: {result}")
+        
+        # Always emit status update, even if already running (for frontend sync)
+        status = slideshow_controller.get_playlist_status()
+        logger.info(f"Start playlist API - got status from backend: {status}")
+        
+        if result is None:
+            logger.error("start_playlist() returned None - this should not happen")
+            return jsonify({'error': 'Internal error: start_playlist returned None'}), 500
+        
+        if result.get('success'):
+            logger.info("Playlist started successfully - emitting WebSocket events")
+            socketio.emit('playlist_started')
+        else:
+            logger.info("Playlist already running - still emitting sync events")
+        
+        logger.info(f"Emitting playlist_status_update: running={status.get('running')}, current_item={status.get('current_item', {}).get('directory_name')}")
+        socketio.emit('playlist_status_update', status)
+        
+        if result.get('success'):
+            return jsonify({'status': 'success'})
+        else:
+            return jsonify({'error': result.get('error', 'Unknown error')}), 400
+    except Exception as e:
+        logger.error(f"Error starting playlist: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/playlist/pause', methods=['POST'])
+def pause_playlist():
+    """Pause or resume playlist."""
+    try:
+        slideshow_controller.toggle_playlist_pause()
+        socketio.emit('playlist_paused')
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logger.error(f"Error pausing playlist: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/playlist/skip', methods=['POST'])
+def skip_playlist():
+    """Skip to next item in playlist."""
+    try:
+        slideshow_controller.skip_playlist_item()
+        socketio.emit('playlist_skipped')
+        
+        # Wait a moment for skip to process, then send status update
+        import time
+        time.sleep(1.0)  # Increased delay for more reliable skip processing
+        
+        # Send status update from API endpoint with app context
+        status = slideshow_controller.get_playlist_status()
+        logger.info(f"Skip - about to send WebSocket update: running={status.get('running')}, current_item_id={status.get('current_item', {}).get('id')}, current_item={status.get('current_item', {}).get('directory_name')}")
+        
+        try:
+            with app.app_context():
+                socketio.emit('playlist_status_update', status)
+                logger.info("Skip - WebSocket emit() call completed successfully")
+        except Exception as e:
+            logger.error(f"Skip - WebSocket emit() failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+        
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logger.error(f"Error skipping playlist item: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/playlist/stop', methods=['POST'])
+def stop_playlist():
+    """Stop playlist mode slideshow."""
+    try:
+        slideshow_controller.stop_playlist()
+        socketio.emit('playlist_stopped')
+        
+        # Send final status update to clear highlighting
+        status = slideshow_controller.get_playlist_status()
+        with app.app_context():
+            socketio.emit('playlist_status_update', status)
+        
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logger.error(f"Error stopping playlist: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/playlist/status', methods=['GET'])
+def get_playlist_status():
+    """Get current playlist execution status."""
+    status = slideshow_controller.get_playlist_status()
+    return jsonify(status)
+
+
 @socketio.on('connect')
 def handle_connect():
     """Handle client connection."""
     logger.info('Client connected')
+    
     
     # Check if discovery is currently running and notify client
     global discovery_running

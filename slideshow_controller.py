@@ -27,6 +27,16 @@ class SlideshowController:
         self.current_image_index = 0
         self.current_images = {}  # device_uuid -> current_image_path
         
+        # Playlist functionality
+        self.playlist_thread = None
+        self.is_playlist_running = False
+        self.is_playlist_paused = False
+        self.current_playlist_index = 0
+        self.playlist_start_time = None
+        self.playlist_pause_time = None
+        self.playlist_accumulated_time = 0
+        self.skip_requested = False
+        
         self._lock = threading.Lock()
         self.supported_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
     
@@ -96,6 +106,12 @@ class SlideshowController:
         with self._lock:
             if self.is_slideshow_running:
                 self.logger.warning("Slideshow is already running")
+                return False
+                
+            if self.is_playlist_running:
+                self.logger.warning("Cannot start regular slideshow while playlist is running")
+                if self.socketio:
+                    self.socketio.emit('error', {'message': 'Cannot start regular slideshow while playlist is running. Stop playlist first.'})
                 return False
         
         # Get enabled devices
@@ -337,5 +353,280 @@ class SlideshowController:
     def cleanup(self):
         """Clean up resources when shutting down."""
         self.stop_slideshow()
+        self.stop_playlist()
         if self.image_server.is_running:
             self.image_server.stop()
+    
+    # Playlist functionality
+    def start_playlist(self) -> Dict[str, Any]:
+        """Start playlist mode slideshow."""
+        with self._lock:
+            if self.is_playlist_running:
+                return {'success': False, 'error': 'Playlist is already running'}
+            
+            if self.is_slideshow_running:
+                return {'success': False, 'error': 'Regular slideshow is running. Stop it first.'}
+        
+        # Get playlist items
+        playlist_items = self.settings_manager.get_playlist_items()
+        valid_items = [item for item in playlist_items if item['is_valid']]
+        
+        if not valid_items:
+            return {'success': False, 'error': 'No valid directories in playlist'}
+        
+        # Get enabled devices
+        enabled_devices = self.chromecast_manager.get_enabled_devices()
+        if not enabled_devices:
+            return {'success': False, 'error': 'No enabled Chromecast devices found'}
+        
+        # Start playlist thread
+        with self._lock:
+            self.is_playlist_running = True
+            self.is_playlist_paused = False
+            self.current_playlist_index = 0
+            self.playlist_start_time = time.time()
+            self.playlist_pause_time = None
+            self.playlist_accumulated_time = 0
+            self.skip_requested = False
+            self.playlist_thread = threading.Thread(target=self._playlist_loop, daemon=True)
+            self.playlist_thread.start()
+        
+        self.logger.info(f"Started playlist with {len(valid_items)} valid items")
+        return {'success': True}
+    
+    def stop_playlist(self):
+        """Stop the playlist."""
+        with self._lock:
+            if not self.is_playlist_running:
+                return
+            
+            self.is_playlist_running = False
+            self.is_playlist_paused = False
+            self.skip_requested = False
+        
+        # Wait for playlist thread to finish
+        if self.playlist_thread:
+            self.playlist_thread.join(timeout=5)
+        
+        # Stop image server
+        self.image_server.stop()
+        
+        # Clear current images
+        self.current_images.clear()
+        
+        self.logger.info("Playlist stopped")
+        # Skip WebSocket emissions to avoid conflicts - let API endpoint handle stop notifications
+    
+    def toggle_playlist_pause(self):
+        """Toggle pause state of the playlist."""
+        with self._lock:
+            if not self.is_playlist_running:
+                return False
+            
+            if self.is_playlist_paused:
+                # Resume
+                if self.playlist_pause_time:
+                    self.playlist_accumulated_time += time.time() - self.playlist_pause_time
+                    self.playlist_pause_time = None
+                self.is_playlist_paused = False
+                self.logger.info("Playlist resumed")
+            else:
+                # Pause
+                self.playlist_pause_time = time.time()
+                self.is_playlist_paused = True
+                self.logger.info("Playlist paused")
+            
+            # Skip WebSocket update to avoid conflicts with API endpoint
+        
+        return True
+    
+    def skip_playlist_item(self):
+        """Skip to the next item in the playlist."""
+        with self._lock:
+            if not self.is_playlist_running:
+                return False
+            
+            # Signal the playlist loop to skip to the next item
+            self.skip_requested = True
+            self.logger.info("Skip requested for playlist item")
+        
+        return True
+    
+    def _playlist_loop(self):
+        """Main playlist loop that runs in a background thread."""
+        playlist_items = self.settings_manager.get_playlist_items()
+        valid_items = [item for item in playlist_items if item['is_valid']]
+        
+        if not valid_items:
+            self.logger.error("No valid playlist items found")
+            with self._lock:
+                self.is_playlist_running = False
+            return
+        
+        while self.is_playlist_running:
+            try:
+                # Get current playlist item
+                current_item = valid_items[self.current_playlist_index % len(valid_items)]
+                directory = current_item['directory_path']
+                duration_minutes = current_item['duration_minutes']
+                
+                self.logger.info(f"Starting playlist item: {current_item['directory_name']} for {duration_minutes} minutes")
+                
+                # Start slideshow for this directory
+                if not self._start_directory_slideshow(directory):
+                    self.logger.error(f"Failed to start slideshow for directory: {directory}")
+                    # Move to next item
+                    self.current_playlist_index = (self.current_playlist_index + 1) % len(valid_items)
+                    continue
+                
+                # Reset timing
+                item_start_time = time.time()
+                item_accumulated_time = 0
+                self.current_item_start_time = item_start_time  # Track for status
+                
+                # Get images for logging
+                images = self.get_images_in_directory(directory)
+                
+                # Skip WebSocket emission here to avoid conflicts with API endpoint
+                self.logger.info(f"Starting playlist directory: {current_item['directory_name']} with {len(images)} images")
+                
+                # Run slideshow for specified duration
+                while self.is_playlist_running:
+                    if self.is_playlist_paused:
+                        time.sleep(1)  # Check every second when paused
+                        # Skip WebSocket updates when paused to avoid conflicts with API endpoint
+                        continue
+                    
+                    # Calculate elapsed time
+                    current_time = time.time()
+                    elapsed_time = (current_time - item_start_time) + item_accumulated_time
+                    
+                    # Check if duration has elapsed or skip was requested
+                    if elapsed_time >= duration_minutes * 60 or self.skip_requested:
+                        if self.skip_requested:
+                            self.logger.info("Processing skip request - advancing to next playlist item")
+                            self.skip_requested = False  # Reset the flag
+                        else:
+                            self.logger.info(f"Duration elapsed ({elapsed_time:.1f}s >= {duration_minutes * 60}s) - advancing to next playlist item")
+                        break
+                    
+                    # Update slideshow (only if rotation is enabled to save CPU)
+                    if self.settings_manager.is_rotation_enabled():
+                        enabled_devices = self.chromecast_manager.get_enabled_devices()
+                        if enabled_devices:
+                            images = self.get_images_in_directory(directory)
+                            if images:
+                                self._distribute_images_to_devices(images, enabled_devices)
+                    
+                    # Skip periodic WebSocket updates to avoid conflicts with API endpoint
+                    # Let API endpoint handle all WebSocket communications
+                    if int(elapsed_time) % 5 == 0:
+                        status = self.get_playlist_status()
+                        self.logger.info(f"Periodic status check (no WebSocket): running={status.get('running')}, time_remaining={status.get('time_remaining')}")
+                    
+                    # Wait for slideshow interval, but check for skip requests more frequently
+                    interval = self.settings_manager.get_slideshow_interval()
+                    sleep_chunks = max(1, interval)  # Sleep in 1-second chunks
+                    for _ in range(sleep_chunks):
+                        if self.skip_requested or not self.is_playlist_running:
+                            break
+                        time.sleep(1)
+                    
+                    # Handle pause state changes
+                    if self.is_playlist_paused and self.playlist_pause_time:
+                        item_accumulated_time += self.playlist_pause_time - item_start_time
+                        item_start_time = time.time()  # Reset start time when resuming
+                        self.playlist_pause_time = None
+                
+                # Move to next playlist item
+                old_index = self.current_playlist_index
+                self.current_playlist_index = (self.current_playlist_index + 1) % len(valid_items)
+                
+                # Skip WebSocket emission here to avoid conflicts - let API endpoint handle it
+                self.logger.info(f"SKIP DEBUG: Advanced from index {old_index} to {self.current_playlist_index}, item: {valid_items[self.current_playlist_index]['directory_name']}")
+                
+            except Exception as e:
+                self.logger.error(f"Error in playlist loop: {e}")
+                time.sleep(5)  # Wait before retrying
+        
+        # Cleanup
+        with self._lock:
+            self.is_playlist_running = False
+        
+        # Stop any running slideshow
+        self.image_server.stop()
+        self.current_images.clear()
+        
+        # Skip WebSocket emissions to avoid conflicts - let API endpoint handle stop notifications
+    
+    def _start_directory_slideshow(self, directory: str) -> bool:
+        """Start slideshow for a specific directory (used by playlist)."""
+        # Get images from directory
+        images = self.get_images_in_directory(directory)
+        if not images:
+            self.logger.error(f"No images found in directory: {directory}")
+            return False
+        
+        # Start image server for this directory
+        self.image_server.set_image_directory(directory)
+        if not self.image_server.start():
+            self.logger.error("Failed to start image server")
+            return False
+        
+        # Send initial images to devices (but don't start regular slideshow thread)
+        enabled_devices = self.chromecast_manager.get_enabled_devices()
+        if enabled_devices:
+            self._distribute_images_to_devices(images, enabled_devices)
+            self.logger.info(f"Starting playlist directory: {os.path.basename(directory)} with {len(images)} images to {len(enabled_devices)} devices")
+        
+        return True
+    
+    def get_playlist_status(self) -> Dict[str, Any]:
+        """Get current playlist execution status."""
+        if not self.is_playlist_running:
+            self.logger.debug("get_playlist_status: is_playlist_running is False")
+            return {
+                'running': False,
+                'paused': False,
+                'current_item': None,
+                'time_remaining': 0,
+                'total_items': 0
+            }
+        
+        playlist_items = self.settings_manager.get_playlist_items()
+        valid_items = [item for item in playlist_items if item['is_valid']]
+        
+        if not valid_items:
+            self.logger.debug("get_playlist_status: no valid items found")
+            return {
+                'running': False,
+                'paused': False,
+                'current_item': None,
+                'time_remaining': 0,
+                'total_items': 0
+            }
+        
+        current_item = valid_items[self.current_playlist_index % len(valid_items)]
+        self.logger.debug(f"get_playlist_status: returning running=True, current_item={current_item['directory_name']}")
+        
+        # Calculate time remaining for current item - this needs to be based on individual item timing
+        # For now, use a simple calculation based on start time
+        if hasattr(self, 'current_item_start_time'):
+            if self.is_playlist_paused and self.playlist_pause_time:
+                elapsed_time = self.playlist_pause_time - self.current_item_start_time
+            else:
+                elapsed_time = time.time() - self.current_item_start_time
+        else:
+            elapsed_time = 0
+        
+        duration_seconds = current_item['duration_minutes'] * 60
+        time_remaining = max(0, duration_seconds - elapsed_time)
+        
+        return {
+            'running': True,
+            'paused': self.is_playlist_paused,
+            'current_item': current_item,
+            'current_index': self.current_playlist_index,
+            'time_remaining': int(time_remaining),
+            'total_items': len(valid_items)
+        }
