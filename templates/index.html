@@ -25,6 +25,10 @@
                         <label>Current Path:</label>
                         <span id="current-path"></span>
                     </div>
+                    <div class="directory-shortcuts">
+                        <button class="btn btn-secondary btn-sm" onclick="controller.browseDirectory('/Volumes')">External Drives</button>
+                        <button class="btn btn-secondary btn-sm" onclick="controller.browseDirectory('/Users/dave')">Home</button>
+                    </div>
                     <div class="directory-list" id="directory-list">
                         <div class="loading">Loading directories...</div>
                     </div>
@@ -54,18 +58,6 @@
             </section>
 
 
-            <!-- Device Selection Section -->
-            <section class="panel">
-                <h2>Chromecast Devices</h2>
-                <div class="device-actions">
-                    <button id="discover-devices" class="btn btn-secondary">Discover Devices</button>
-                    <span class="device-count">Found: <span id="device-count">0</span></span>
-                </div>
-                <div class="device-list" id="device-list">
-                    <div class="no-devices">No devices found. Click "Discover Devices" to search.</div>
-                </div>
-            </section>
-
             <!-- Slideshow Controls Section -->
             <section class="panel">
                 <h2>Slideshow Controls</h2>
@@ -82,7 +74,7 @@
                             When disabled, images will be displayed once and remain static until manually changed.
                         </div>
                     </div>
-                    
+
                     <div class="control-modes">
                         <h3>Start Slideshow</h3>
                         <div class="control-buttons">
@@ -96,7 +88,7 @@
                         </div>
                     </div>
                 </div>
-                
+
                 <div class="slideshow-status" id="slideshow-status">
                     <div class="status-item">
                         <span class="label">Status:</span>
@@ -110,6 +102,18 @@
                         <span class="label">Progress:</span>
                         <div id="slideshow-progress" class="progress-display"></div>
                     </div>
+                </div>
+            </section>
+
+            <!-- Device Selection Section -->
+            <section class="panel">
+                <h2>Chromecast Devices</h2>
+                <div class="device-actions">
+                    <button id="discover-devices" class="btn btn-secondary">Discover Devices</button>
+                    <span class="device-count">Found: <span id="device-count">0</span></span>
+                </div>
+                <div class="device-list" id="device-list">
+                    <div class="no-devices">No devices found. Click "Discover Devices" to search.</div>
                 </div>
             </section>
 

@@ -69,39 +69,36 @@ def save_settings():
 @app.route('/api/directories', methods=['GET'])
 def browse_directories():
     """Browse directory structure for image selection."""
-    path = request.args.get('path', settings_manager.get_selected_directory())
-    
+    explicit_path = request.args.get('path')
+    path = explicit_path or settings_manager.get_selected_directory()
+
+    def list_directory(directory_path):
+        items = []
+        if directory_path.parent != directory_path:
+            items.append({'name': '..', 'path': str(directory_path.parent), 'type': 'directory'})
+        for item in sorted(directory_path.iterdir()):
+            if item.is_dir() and not item.name.startswith('.'):
+                items.append({'name': item.name, 'path': str(item), 'type': 'directory'})
+        return items
+
     try:
         directory_path = Path(path)
         if not directory_path.exists() or not directory_path.is_dir():
             directory_path = Path(os.path.expanduser('~'))
-        
-        items = []
-        
-        # Add parent directory link (except for root)
-        if directory_path.parent != directory_path:
-            items.append({
-                'name': '..',
-                'path': str(directory_path.parent),
-                'type': 'directory'
-            })
-        
-        # Add subdirectories
-        for item in sorted(directory_path.iterdir()):
-            if item.is_dir() and not item.name.startswith('.'):
-                items.append({
-                    'name': item.name,
-                    'path': str(item),
-                    'type': 'directory'
-                })
-        
-        return jsonify({
-            'current_path': str(directory_path),
-            'items': items
-        })
-        
+
+        items = list_directory(directory_path)
+        return jsonify({'current_path': str(directory_path), 'items': items})
+
     except Exception as e:
         logger.error(f"Error browsing directory {path}: {e}")
+        # If we used a stored/default path and it failed, fall back to home
+        if not explicit_path:
+            try:
+                home_path = Path(os.path.expanduser('~'))
+                items = list_directory(home_path)
+                return jsonify({'current_path': str(home_path), 'items': items})
+            except Exception:
+                pass
         return jsonify({'error': str(e)}), 500
 
 

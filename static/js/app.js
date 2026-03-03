@@ -199,6 +199,7 @@ class ChromecastSlideshowController {
         await this.loadPlaylist();
         // Removed loadSlideshowStatus() - using playlist system exclusively
         // Removed loadPlaylistStatus() - rely on WebSocket updates for real-time status
+        this.discoverDevices();
     }
 
     async loadSettings() {
@@ -229,9 +230,19 @@ class ChromecastSlideshowController {
             const response = await fetch(url);
             const data = await response.json();
 
+            if (data.error) {
+                const isPermission = data.error.includes('Operation not permitted') || data.error.includes('Permission denied');
+                if (isPermission) {
+                    this.logMessage(`Permission denied: "${path}". Grant Full Disk Access to this app in System Settings → Privacy & Security → Full Disk Access.`, 'error');
+                } else {
+                    this.logMessage(`Error browsing directory: ${data.error}`, 'error');
+                }
+                return;
+            }
+
             this.currentPath = data.current_path;
             this.currentPathEl.textContent = data.current_path;
-            this.updateDirectoryList(data.items);
+            this.updateDirectoryList(data.items || []);
 
             // Update button text based on directory
             this.addDirectoryToPlaylistBtn.disabled = false;
@@ -446,6 +457,7 @@ class ChromecastSlideshowController {
 
     async startPlaylistSlideshow() {
         try {
+            await this.saveSettings();
             const response = await fetch('/api/playlist/start', { method: 'POST' });
             const result = await response.json();
 

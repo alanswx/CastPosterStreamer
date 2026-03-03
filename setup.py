@@ -34,6 +34,7 @@ OPTIONS = {
         'NSHighResolutionCapable': True,
         'NSPrincipalClass': 'NSApplication',
         'NSAppleEventsUsageDescription': 'This app needs permission to control other applications to manage presentations.',
+        'NSRemovableVolumesUsageDescription': 'Posters needs access to external drives to load images from them.',
         'CFBundleDocumentTypes': [
             {
                 'CFBundleTypeName': 'All Files',
@@ -48,7 +49,7 @@ OPTIONS = {
         'com.apple.security.network.client': True,
         'com.apple.security.network.server': True,
     },
-    'packages': ['rumps', 'flask', 'flask_socketio', 'PIL', 'catt', 'pychromecast', 'socketio', 'engineio', 'zeroconf', 'packaging'],
+    'packages': ['rumps', 'flask', 'flask_socketio', 'flask_cors', 'PIL', 'catt', 'pychromecast', 'socketio', 'engineio', 'zeroconf', 'packaging', 'gevent', 'geventwebsocket'],
     'includes': ['subprocess', 'webbrowser', 'threading', 'pathlib', 'json', 'os', 'sys'],
     'excludes': ['tkinter'],
 }

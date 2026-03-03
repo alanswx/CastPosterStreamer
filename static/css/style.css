@@ -801,3 +801,14 @@ header h1 {
 .log-container::-webkit-scrollbar-thumb:hover {
     background: #a8a8a8;
 }
+
+.btn-sm {
+    padding: 0.2rem 0.6rem;
+    font-size: 0.8rem;
+}
+
+.directory-shortcuts {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+}

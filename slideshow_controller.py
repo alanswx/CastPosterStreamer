@@ -533,7 +533,8 @@ class SlideshowController:
                 item_start_time = time.time()
                 item_accumulated_time = 0
                 self.current_item_start_time = item_start_time
-                
+                last_image_time = 0  # force immediate first image send
+
                 # Run slideshow for specified duration
                 self.logger.info("Playlist loop - Inner loop started.")
                 while self.is_playlist_running:
@@ -541,7 +542,7 @@ class SlideshowController:
                         self.logger.info("Playlist is paused.")
                         self._sleep(1)
                         continue
-                    
+
                     current_time = time.time()
                     elapsed_time = (current_time - item_start_time) + item_accumulated_time
                     self.logger.debug(f"Inner loop iteration: elapsed_time={elapsed_time:.2f}s")
@@ -553,14 +554,16 @@ class SlideshowController:
                         else:
                             self.logger.info(f"Duration elapsed, breaking inner loop.")
                         break
-                    
-                    if self.settings_manager.is_rotation_enabled():
+
+                    interval = self.settings_manager.get_slideshow_interval()
+                    if self.settings_manager.is_rotation_enabled() and (current_time - last_image_time) >= interval:
                         enabled_devices = self.chromecast_manager.get_enabled_devices()
                         if enabled_devices:
                             images = self.get_images_in_directory(directory)
                             if images:
                                 self._distribute_images_to_devices(images, enabled_devices)
-                    
+                                last_image_time = current_time
+
                     self._sleep(1)
                     
                     if int(elapsed_time) % 2 == 0:
