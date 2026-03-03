@@ -1,8 +1,16 @@
+# TEMPORARY: Disable gevent monkey patching to test WebSocket functionality
+# CRITICAL: gevent monkey patching must be done FIRST, before any other imports
+import gevent
+from gevent import monkey
+monkey.patch_all()
+
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit, join_room
+from flask_cors import CORS
 import os
 import threading
 import logging
+import time
 from pathlib import Path
 
 from settings_manager import SettingsManager
@@ -12,13 +20,18 @@ from slideshow_controller import SlideshowController
 # The 'DATA_FILES' setting in setup.py now correctly copies the 'templates'
 # and 'static' folders, so we can revert to the standard Flask configuration.
 app = Flask(__name__)
+CORS(app)
 app.config['SECRET_KEY'] = 'chromecast-slideshow-secret-key'
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 # Initialize components
 settings_manager = SettingsManager()
 chromecast_manager = ChromecastManager(settings_manager)
-slideshow_controller = SlideshowController(settings_manager, chromecast_manager, socketio)
+
+# Initialize SocketIO with default async mode (auto-detects best backend)
+# socketio = SocketIO(app, cors_allowed_origins="*")  <-- Removed duplicate initialization
+slideshow_controller = SlideshowController(settings_manager, chromecast_manager)
+slideshow_controller.init_app(socketio, app)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -411,9 +424,11 @@ def start_playlist():
             logger.info("Playlist started successfully - emitting WebSocket events")
             socketio.emit('playlist_started')
         else:
-            logger.info("Playlist already running - still emitting sync events")
+            logger.info(f"Playlist start failed or already running: {result.get('error')}")
         
-        logger.info(f"Emitting playlist_status_update: running={status.get('running')}, current_item={status.get('current_item', {}).get('directory_name')}")
+        current_item = status.get('current_item')
+        dir_name = current_item.get('directory_name') if current_item else 'None'
+        logger.info(f"Emitting playlist_status_update: running={status.get('running')}, current_item={dir_name}")
         socketio.emit('playlist_status_update', status)
         
         if result.get('success'):
@@ -442,24 +457,7 @@ def skip_playlist():
     """Skip to next item in playlist."""
     try:
         slideshow_controller.skip_playlist_item()
-        socketio.emit('playlist_skipped')
-        
-        # Wait a moment for skip to process, then send status update
-        import time
-        time.sleep(1.0)  # Increased delay for more reliable skip processing
-        
-        # Send status update from API endpoint with app context
-        status = slideshow_controller.get_playlist_status()
-        logger.info(f"Skip - about to send WebSocket update: running={status.get('running')}, current_item_id={status.get('current_item', {}).get('id')}, current_item={status.get('current_item', {}).get('directory_name')}")
-        
-        try:
-            with app.app_context():
-                socketio.emit('playlist_status_update', status)
-                logger.info("Skip - WebSocket emit() call completed successfully")
-        except Exception as e:
-            logger.error(f"Skip - WebSocket emit() failed: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+        # Note: Controller will handle all WebSocket emissions - removed blocking sleep and duplicate emissions
         
         return jsonify({'status': 'success'})
     except Exception as e:
@@ -520,6 +518,25 @@ def handle_connect():
 def handle_disconnect():
     """Handle client disconnection."""
     logger.info('Client disconnected')
+
+
+@socketio.on('test_websocket')
+def handle_test_websocket():
+    """Test WebSocket event handler for debugging."""
+    logger.info("Test WebSocket event received from client")
+    try:
+        # Test immediate emission
+        socketio.emit('test_response', {'message': 'WebSocket test successful', 'timestamp': time.time()})
+        logger.info("Test WebSocket response emitted successfully")
+        
+        # Test emission with Flask app context (like our background threads)
+        with app.app_context():
+            socketio.emit('test_background_response', {'message': 'Background WebSocket test successful', 'timestamp': time.time()})
+        logger.info("Test background WebSocket response emitted successfully")
+        
+    except Exception as e:
+        logger.error(f"Error in test WebSocket handler: {e}")
+        emit('error', {'message': f'Test WebSocket error: {str(e)}'})
 
 
 @socketio.on('discover_devices')
@@ -611,10 +628,8 @@ except Exception as e:
                     discovery_running = False
                 socketio.emit('discovery_finished')
         
-        # Run discovery in a separate thread to avoid blocking
-        thread = threading.Thread(target=discovery_worker)
-        thread.daemon = True
-        thread.start()
+        # Run discovery using socketio background task to work with gevent
+        socketio.start_background_task(discovery_worker)
         
     except Exception as e:
         logger.error(f"Error starting device discovery: {e}")
@@ -624,15 +639,18 @@ except Exception as e:
 def start_auto_discovery():
     """Start automatic device discovery after a short delay to let the server initialize."""
     import time
-    time.sleep(5)  # Wait for server to be ready and potential clients to connect
-    logger.info("Starting automatic device discovery...")
+    import gevent
     
-    # Trigger discovery using the same mechanism as WebSocket
-    global discovery_running
-    with discovery_lock:
-        if discovery_running:
-            return  # Already running
-        discovery_running = True
+    def delayed_discovery_worker():
+        gevent.sleep(5)  # Wait for server to be ready and potential clients to connect
+        logger.info("Starting automatic device discovery...")
+        
+        # Trigger discovery using the same mechanism as WebSocket
+        global discovery_running
+        with discovery_lock:
+            if discovery_running:
+                return  # Already running
+            discovery_running = True
     
     try:
         # Notify frontend that auto-discovery is starting
@@ -704,10 +722,8 @@ except Exception as e:
                     discovery_running = False
                 socketio.emit('discovery_finished')
         
-        # Run discovery in a separate thread
-        thread = threading.Thread(target=discovery_worker)
-        thread.daemon = True
-        thread.start()
+        # Run discovery using socketio background task to work with gevent
+        socketio.start_background_task(discovery_worker)
         
     except Exception as e:
         logger.warning(f"Failed to start auto-discovery: {e}")
@@ -719,10 +735,8 @@ if __name__ == '__main__':
     try:
         logger.info("Starting Chromecast Slideshow Server...")
         
-        # Start auto-discovery in a separate thread after server starts
-        auto_discovery_thread = threading.Thread(target=start_auto_discovery)
-        auto_discovery_thread.daemon = True
-        auto_discovery_thread.start()
+        # TEMPORARY: Disable auto-discovery to test WebSocket functionality
+        # socketio.start_background_task(start_auto_discovery)
         
         socketio.run(app, host='0.0.0.0', port=5001, debug=False, allow_unsafe_werkzeug=True)
         

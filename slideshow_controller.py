@@ -1,11 +1,18 @@
-import threading
 import time
 import os
 import logging
+import threading
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from PIL import Image
 import hashlib
+
+try:
+    import gevent
+    import gevent.lock
+    GEVENT_AVAILABLE = True
+except ImportError:
+    GEVENT_AVAILABLE = False
 
 from settings_manager import SettingsManager
 from chromecast_manager import ChromecastManager
@@ -15,11 +22,15 @@ from image_server import get_image_server
 class SlideshowController:
     """Controls the slideshow timing and image distribution."""
     
-    def __init__(self, settings_manager: SettingsManager, chromecast_manager: ChromecastManager, socketio=None):
+    def __init__(self, settings_manager: SettingsManager, chromecast_manager: ChromecastManager):
         self.settings_manager = settings_manager
         self.chromecast_manager = chromecast_manager
-        self.socketio = socketio
+        self.socketio = None
         self.logger = logging.getLogger(__name__)
+    
+    def init_app(self, socketio, app=None):
+        self.socketio = socketio
+        self.app = app
         
         self.image_server = get_image_server()
         self.slideshow_thread = None
@@ -37,8 +48,19 @@ class SlideshowController:
         self.playlist_accumulated_time = 0
         self.skip_requested = False
         
-        self._lock = threading.Lock()
+        # Use gevent lock if available, otherwise regular threading lock
+        if GEVENT_AVAILABLE:
+            self._lock = gevent.lock.BoundedSemaphore()
+        else:
+            self._lock = threading.Lock()
         self.supported_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
+    
+    def _sleep(self, seconds):
+        """Sleep using gevent if available, otherwise regular time.sleep"""
+        if GEVENT_AVAILABLE:
+            gevent.sleep(seconds)
+        else:
+            time.sleep(seconds)
     
     def get_images_in_directory(self, directory: str) -> List[str]:
         """Get all supported image files in the specified directory."""
@@ -58,7 +80,7 @@ class SlideshowController:
             
             # Sort images by filename for consistent ordering
             images.sort()
-            self.logger.info(f"Found {len(images)} images in {directory}")
+            self.logger.debug(f"Found {len(images)} images in {directory}")
             return images
             
         except Exception as e:
@@ -143,8 +165,7 @@ class SlideshowController:
         with self._lock:
             self.is_slideshow_running = True
             self.current_image_index = 0
-            self.slideshow_thread = threading.Thread(target=self._slideshow_loop, daemon=True)
-            self.slideshow_thread.start()
+            self.slideshow_thread = gevent.spawn(self._slideshow_loop)
         
         self.logger.info(f"Started slideshow with {len(images)} images and {len(enabled_devices)} devices")
         if self.socketio:
@@ -211,15 +232,15 @@ class SlideshowController:
                 
                 # If rotation is disabled, wait longer to reduce CPU usage
                 if not rotation_enabled:
-                    time.sleep(max(interval, 10))  # At least 10 seconds between checks
+                    self._sleep(max(interval, 10))  # At least 10 seconds between checks
                 else:
-                    time.sleep(interval)
+                    self._sleep(interval)
                 
             except Exception as e:
                 self.logger.error(f"Error in slideshow loop: {e}")
                 if self.socketio:
                     self.socketio.emit('error', {'message': f'Slideshow error: {str(e)}'})
-                time.sleep(5)  # Wait before retrying
+                self._sleep(5)  # Wait before retrying
         
         # Slideshow stopped
         with self._lock:
@@ -256,36 +277,65 @@ class SlideshowController:
             self.logger.error("No valid image URLs generated")
             return
         
-        # Send images to devices
+        # Send images to devices (use background task to avoid blocking the gevent loop)
         device_uuids = [device['uuid'] for device in devices]
-        results = self.chromecast_manager.send_image_to_multiple_devices(device_uuids, image_urls)
-        
-        # Update current images tracking
-        for i, (uuid, success) in enumerate(results.items()):
-            if success and i < len(current_images):
-                self.current_images[uuid] = current_images[i]
-        
-        # Only advance to next set of images if rotation is enabled
-        rotation_enabled = self.settings_manager.is_rotation_enabled()
-        if rotation_enabled:
-            self.current_image_index = (self.current_image_index + num_devices) % len(images)
-        
-        # Emit status update
         if self.socketio:
-            successful_sends = sum(1 for success in results.values() if success)
-            self.socketio.emit('slideshow_update', {
-                'current_index': self.current_image_index,
-                'total_images': len(images),
-                'successful_devices': successful_sends,
-                'total_devices': len(devices),
-                'current_images': [os.path.basename(img) for img in current_images],
-                'rotation_enabled': rotation_enabled
-            })
-        
-        rotation_status = "with rotation" if rotation_enabled else "without rotation"
-        self.logger.info(f"Distributed {len(image_urls)} images to {len(devices)} devices "
-                        f"({sum(results.values())} successful) {rotation_status}")
+            # When using socketio, handle everything in the background task
+            rotation_enabled = self.settings_manager.is_rotation_enabled()
+            self.socketio.start_background_task(self._send_images_background, device_uuids, image_urls, current_images, num_devices, len(images), rotation_enabled)
+            return
+        else:
+            # Fallback for non-socketio usage (direct execution)
+            results = self.chromecast_manager.send_image_to_multiple_devices(device_uuids, image_urls)
+            
+            # Update current images tracking
+            for i, (uuid, success) in enumerate(results.items()):
+                if success and i < len(current_images):
+                    self.current_images[uuid] = current_images[i]
+            
+            # Only advance to next set of images if rotation is enabled
+            rotation_enabled = self.settings_manager.is_rotation_enabled()
+            if rotation_enabled:
+                self.current_image_index = (self.current_image_index + num_devices) % len(images)
+            
+            rotation_status = "with rotation" if rotation_enabled else "without rotation"
+            self.logger.info(f"Distributed {len(image_urls)} images to {len(devices)} devices "
+                            f"({sum(results.values())} successful) {rotation_status}")
     
+    def _send_images_background(self, device_uuids: List[str], image_urls: List[str], current_images: List[str], num_devices: int, total_images: int, rotation_enabled: bool):
+        """Background task to send images to devices without blocking the main loop."""
+        try:
+            results = self.chromecast_manager.send_image_to_multiple_devices(device_uuids, image_urls)
+            
+            # Update current images tracking
+            for i, (uuid, success) in enumerate(results.items()):
+                if success and i < len(current_images):
+                    self.current_images[uuid] = current_images[i]
+            
+            # Only advance to next set of images if rotation is enabled
+            if rotation_enabled:
+                self.current_image_index = (self.current_image_index + num_devices) % total_images
+            
+            # Calculate success count for logging and WebSocket updates
+            successful_count = sum(1 for success in results.values() if success)
+            
+            rotation_status = "with rotation" if rotation_enabled else "without rotation"
+            self.logger.info(f"Distributed {len(image_urls)} images to {len(device_uuids)} devices ({successful_count} successful) {rotation_status}")
+            
+            # Emit update to WebSocket clients
+            if self.socketio and self.app:
+                with self.app.app_context():
+                    self.socketio.emit('slideshow_update', {
+                        'current_index': self.current_image_index,
+                        'total_images': total_images,
+                        'successful_devices': successful_count,
+                        'total_devices': len(device_uuids),
+                        'current_images': [os.path.basename(img) for img in current_images],
+                        'rotation_enabled': rotation_enabled
+                    })
+        except Exception as e:
+            self.logger.error(f"Error in background image distribution: {e}", exc_info=True)
+
     def is_running(self) -> bool:
         """Check if slideshow is currently running."""
         with self._lock:
@@ -388,8 +438,7 @@ class SlideshowController:
             self.playlist_pause_time = None
             self.playlist_accumulated_time = 0
             self.skip_requested = False
-            self.playlist_thread = threading.Thread(target=self._playlist_loop, daemon=True)
-            self.playlist_thread.start()
+            self.playlist_thread = self.socketio.start_background_task(target=self._playlist_loop)
         
         self.logger.info(f"Started playlist with {len(valid_items)} valid items")
         return {'success': True}
@@ -463,6 +512,7 @@ class SlideshowController:
                 self.is_playlist_running = False
             return
         
+        self.logger.info("Playlist loop - Outer loop started.")
         while self.is_playlist_running:
             try:
                 # Get current playlist item
@@ -470,47 +520,40 @@ class SlideshowController:
                 directory = current_item['directory_path']
                 duration_minutes = current_item['duration_minutes']
                 
-                self.logger.info(f"Starting playlist item: {current_item['directory_name']} for {duration_minutes} minutes")
+                self.logger.info(f"Playlist item starting: {current_item['directory_name']} for {duration_minutes} min.")
                 
                 # Start slideshow for this directory
                 if not self._start_directory_slideshow(directory):
-                    self.logger.error(f"Failed to start slideshow for directory: {directory}")
-                    # Move to next item
+                    self.logger.error(f"Failed to start slideshow for directory: {directory}, skipping.")
                     self.current_playlist_index = (self.current_playlist_index + 1) % len(valid_items)
+                    self._sleep(1) # Avoid fast spinning loop on error
                     continue
                 
                 # Reset timing
                 item_start_time = time.time()
                 item_accumulated_time = 0
-                self.current_item_start_time = item_start_time  # Track for status
-                
-                # Get images for logging
-                images = self.get_images_in_directory(directory)
-                
-                # Skip WebSocket emission here to avoid conflicts with API endpoint
-                self.logger.info(f"Starting playlist directory: {current_item['directory_name']} with {len(images)} images")
+                self.current_item_start_time = item_start_time
                 
                 # Run slideshow for specified duration
+                self.logger.info("Playlist loop - Inner loop started.")
                 while self.is_playlist_running:
                     if self.is_playlist_paused:
-                        time.sleep(1)  # Check every second when paused
-                        # Skip WebSocket updates when paused to avoid conflicts with API endpoint
+                        self.logger.info("Playlist is paused.")
+                        self._sleep(1)
                         continue
                     
-                    # Calculate elapsed time
                     current_time = time.time()
                     elapsed_time = (current_time - item_start_time) + item_accumulated_time
-                    
-                    # Check if duration has elapsed or skip was requested
+                    self.logger.debug(f"Inner loop iteration: elapsed_time={elapsed_time:.2f}s")
+
                     if elapsed_time >= duration_minutes * 60 or self.skip_requested:
                         if self.skip_requested:
-                            self.logger.info("Processing skip request - advancing to next playlist item")
-                            self.skip_requested = False  # Reset the flag
+                            self.logger.info("Skip requested, breaking inner loop.")
+                            self.skip_requested = False
                         else:
-                            self.logger.info(f"Duration elapsed ({elapsed_time:.1f}s >= {duration_minutes * 60}s) - advancing to next playlist item")
+                            self.logger.info(f"Duration elapsed, breaking inner loop.")
                         break
                     
-                    # Update slideshow (only if rotation is enabled to save CPU)
                     if self.settings_manager.is_rotation_enabled():
                         enabled_devices = self.chromecast_manager.get_enabled_devices()
                         if enabled_devices:
@@ -518,36 +561,42 @@ class SlideshowController:
                             if images:
                                 self._distribute_images_to_devices(images, enabled_devices)
                     
-                    # Skip periodic WebSocket updates to avoid conflicts with API endpoint
-                    # Let API endpoint handle all WebSocket communications
-                    if int(elapsed_time) % 5 == 0:
+                    self._sleep(1)
+                    
+                    if int(elapsed_time) % 2 == 0:
                         status = self.get_playlist_status()
-                        self.logger.info(f"Periodic status check (no WebSocket): running={status.get('running')}, time_remaining={status.get('time_remaining')}")
+                        self.logger.info(f"🔍 DEBUG: Attempting playlist_status_update emission. SocketIO exists: {self.socketio is not None}, App exists: {self.app is not None}")
+                        if self.socketio and self.app:
+                            try:
+                                with self.app.app_context():
+                                    self.logger.info(f"🔍 DEBUG: Inside app context, about to emit playlist_status_update. Status data: {status}")
+                                    self.socketio.emit('playlist_status_update', status)
+                                    self.logger.info("✅ DEBUG: playlist_status_update emission completed successfully")
+                            except Exception as e:
+                                self.logger.error(f"❌ DEBUG: Error during playlist_status_update emission: {e}", exc_info=True)
+                        else:
+                            self.logger.warning(f"⚠️ DEBUG: Cannot emit playlist_status_update - SocketIO: {self.socketio is not None}, App: {self.app is not None}")
+                        self.logger.info(f"Periodic status update: running={status.get('running')}, time_remaining={status.get('time_remaining')}")
                     
-                    # Wait for slideshow interval, but check for skip requests more frequently
-                    interval = self.settings_manager.get_slideshow_interval()
-                    sleep_chunks = max(1, interval)  # Sleep in 1-second chunks
-                    for _ in range(sleep_chunks):
-                        if self.skip_requested or not self.is_playlist_running:
-                            break
-                        time.sleep(1)
-                    
-                    # Handle pause state changes
                     if self.is_playlist_paused and self.playlist_pause_time:
                         item_accumulated_time += self.playlist_pause_time - item_start_time
-                        item_start_time = time.time()  # Reset start time when resuming
+                        item_start_time = time.time()
                         self.playlist_pause_time = None
                 
+                self.logger.info("Playlist loop - Inner loop finished.")
+                if not self.is_playlist_running:
+                    self.logger.warning("Playlist was stopped during inner loop execution.")
+                    break # Exit outer loop as well
+
                 # Move to next playlist item
-                old_index = self.current_playlist_index
                 self.current_playlist_index = (self.current_playlist_index + 1) % len(valid_items)
-                
-                # Skip WebSocket emission here to avoid conflicts - let API endpoint handle it
-                self.logger.info(f"SKIP DEBUG: Advanced from index {old_index} to {self.current_playlist_index}, item: {valid_items[self.current_playlist_index]['directory_name']}")
+                self.logger.info(f"Advancing to next playlist item, index: {self.current_playlist_index}")
                 
             except Exception as e:
-                self.logger.error(f"Error in playlist loop: {e}")
-                time.sleep(5)  # Wait before retrying
+                self.logger.error(f"Error in playlist loop: {e}", exc_info=True)
+                self._sleep(5)
+        
+        self.logger.info("Playlist loop - Outer loop finished.")
         
         # Cleanup
         with self._lock:
@@ -557,7 +606,21 @@ class SlideshowController:
         self.image_server.stop()
         self.current_images.clear()
         
-        # Skip WebSocket emissions to avoid conflicts - let API endpoint handle stop notifications
+        # Emit final status update to client
+        final_status = self.get_playlist_status()
+        self.logger.info(f"🔍 DEBUG: Attempting FINAL playlist_status_update emission. SocketIO exists: {self.socketio is not None}, App exists: {self.app is not None}")
+        if self.socketio and self.app:
+            try:
+                with self.app.app_context():
+                    self.logger.info(f"🔍 DEBUG: Inside app context, about to emit FINAL playlist_status_update. Status data: {final_status}")
+                    self.socketio.emit('playlist_status_update', final_status)
+                    self.logger.info("✅ DEBUG: FINAL playlist_status_update emission completed successfully")
+            except Exception as e:
+                self.logger.error(f"❌ DEBUG: Error during FINAL playlist_status_update emission: {e}", exc_info=True)
+        else:
+            self.logger.warning(f"⚠️ DEBUG: Cannot emit FINAL playlist_status_update - SocketIO: {self.socketio is not None}, App: {self.app is not None}")
+        
+        self.logger.info("Playlist loop finished.")
     
     def _start_directory_slideshow(self, directory: str) -> bool:
         """Start slideshow for a specific directory (used by playlist)."""

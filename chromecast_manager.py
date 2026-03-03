@@ -104,9 +104,11 @@ class ChromecastManager:
             uuid = device['uuid']
             if uuid in device_settings:
                 device['enabled'] = bool(device_settings[uuid]['enabled'])
+                self.logger.info(f"Device {uuid} ({device['name']}) enabled status from DB: {device['enabled']}")
             else:
                 # New devices default to disabled - user must explicitly enable them
                 device['enabled'] = False
+                self.logger.info(f"Device {uuid} ({device['name']}) not in DB, defaulting to disabled")
         
         return devices
     
