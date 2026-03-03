@@ -5,6 +5,14 @@ from typing import List, Dict, Any, Optional
 import socket
 import json
 
+try:
+    import gevent
+    import gevent.subprocess as gevent_subprocess
+    GEVENT_AVAILABLE = True
+except ImportError:
+    gevent_subprocess = None
+    GEVENT_AVAILABLE = False
+
 # Note: CATT/pychromecast operations are now handled via subprocess to avoid asyncio threading conflicts
 # No direct imports needed here - all operations go through chromecast_subprocess.py
 
@@ -25,10 +33,10 @@ class ChromecastManager:
         self.logger.info("Starting Chromecast device discovery via subprocess...")
         
         try:
-            import subprocess
             import json
             import os
-            
+            subprocess = gevent_subprocess if GEVENT_AVAILABLE else __import__('subprocess')
+
             # Use subprocess to avoid asyncio threading conflicts
             script_path = os.path.join(os.path.dirname(__file__), 'chromecast_subprocess.py')
             result = subprocess.run([
@@ -138,11 +146,11 @@ class ChromecastManager:
             if not device:
                 self.logger.error(f"Device {uuid} not found")
                 return False
-            
-            import subprocess
+
             import json
             import os
-            
+            subprocess = gevent_subprocess if GEVENT_AVAILABLE else __import__('subprocess')
+
             # Use subprocess to avoid asyncio threading conflicts
             script_path = os.path.join(os.path.dirname(__file__), 'chromecast_subprocess.py')
             result = subprocess.run([
@@ -184,16 +192,20 @@ class ChromecastManager:
         
         def send_to_device(uuid, url):
             results[uuid] = self.send_image_to_device(uuid, url)
-        
-        # Start threads for parallel sending
-        for uuid, url in zip(device_uuids, image_urls):
-            thread = threading.Thread(target=send_to_device, args=(uuid, url))
-            threads.append(thread)
-            thread.start()
-        
-        # Wait for all threads to complete
-        for thread in threads:
-            thread.join(timeout=10)  # 10 second timeout per device
+
+        if GEVENT_AVAILABLE:
+            # Use gevent greenlets so joinall properly yields to the event loop
+            greenlets = [gevent.spawn(send_to_device, uuid, url)
+                         for uuid, url in zip(device_uuids, image_urls)]
+            gevent.joinall(greenlets, timeout=10)
+        else:
+            # Fallback to threading
+            for uuid, url in zip(device_uuids, image_urls):
+                thread = threading.Thread(target=send_to_device, args=(uuid, url))
+                threads.append(thread)
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
         
         return results
     
@@ -220,10 +232,10 @@ class ChromecastManager:
             if not device:
                 return None
             
-            import subprocess
             import json
             import os
-            
+            subprocess = gevent_subprocess if GEVENT_AVAILABLE else __import__('subprocess')
+
             # Use subprocess to avoid asyncio threading conflicts
             script_path = os.path.join(os.path.dirname(__file__), 'chromecast_subprocess.py')
             result = subprocess.run([
