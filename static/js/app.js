@@ -164,11 +164,21 @@ class ChromecastSlideshowController {
             const url = path ? `/api/directories?path=${encodeURIComponent(path)}` : '/api/directories';
             const response = await fetch(url);
             const data = await response.json();
-            
+
+            if (data.error) {
+                const isPermission = data.error.includes('Operation not permitted') || data.error.includes('Permission denied');
+                if (isPermission) {
+                    this.logMessage(`Permission denied: "${path}". Grant Full Disk Access to Terminal in System Settings → Privacy & Security → Full Disk Access, then restart the server.`, 'error');
+                } else {
+                    this.logMessage(`Error browsing directory: ${data.error}`, 'error');
+                }
+                return;
+            }
+
             this.currentPath = data.current_path;
             this.currentPathEl.textContent = data.current_path;
             this.updateDirectoryList(data.items);
-            
+
             if (this.selectedDirectory === data.current_path) {
                 this.selectDirectoryBtn.disabled = false;
                 this.selectDirectoryBtn.textContent = 'Directory Selected ✓';

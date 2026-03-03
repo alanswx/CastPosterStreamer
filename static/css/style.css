@@ -102,6 +102,14 @@ header h1 {
 .btn-secondary { background: #95a5a6; }
 .btn-secondary:hover { background: #7f8c8d; }
 
+.btn-sm { padding: 0.2rem 0.6rem; font-size: 0.8rem; }
+
+.directory-shortcuts {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
 .btn-success { background: #27ae60; }
 .btn-success:hover { background: #229954; }
 

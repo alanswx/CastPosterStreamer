@@ -25,6 +25,10 @@
                         <label>Current Path:</label>
                         <span id="current-path"></span>
                     </div>
+                    <div class="directory-shortcuts">
+                        <button class="btn btn-secondary btn-sm" onclick="controller.browseDirectory('/Volumes')">External Drives</button>
+                        <button class="btn btn-secondary btn-sm" onclick="controller.browseDirectory('/Users/dave')">Home</button>
+                    </div>
                     <div class="directory-list" id="directory-list">
                         <div class="loading">Loading directories...</div>
                     </div>
@@ -42,18 +46,6 @@
                 </div>
                 <div class="image-grid" id="image-grid">
                     <div class="no-images">Select a directory containing images</div>
-                </div>
-            </section>
-
-            <!-- Device Selection Section -->
-            <section class="panel">
-                <h2>Chromecast Devices</h2>
-                <div class="device-actions">
-                    <button id="discover-devices" class="btn btn-secondary">Discover Devices</button>
-                    <span class="device-count">Found: <span id="device-count">0</span></span>
-                </div>
-                <div class="device-list" id="device-list">
-                    <div class="no-devices">No devices found. Click "Discover Devices" to search.</div>
                 </div>
             </section>
 
@@ -89,6 +81,18 @@
                         <span class="label">Current Images:</span>
                         <div id="current-images" class="current-images-list"></div>
                     </div>
+                </div>
+            </section>
+
+            <!-- Device Selection Section -->
+            <section class="panel">
+                <h2>Chromecast Devices</h2>
+                <div class="device-actions">
+                    <button id="discover-devices" class="btn btn-secondary">Discover Devices</button>
+                    <span class="device-count">Found: <span id="device-count">0</span></span>
+                </div>
+                <div class="device-list" id="device-list">
+                    <div class="no-devices">No devices found. Click "Discover Devices" to search.</div>
                 </div>
             </section>
 
