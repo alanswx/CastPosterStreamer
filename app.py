@@ -22,7 +22,7 @@ from slideshow_controller import SlideshowController
 app = Flask(__name__)
 CORS(app)
 app.config['SECRET_KEY'] = 'chromecast-slideshow-secret-key'
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", ping_timeout=60, ping_interval=25)
 
 # Initialize components
 settings_manager = SettingsManager()

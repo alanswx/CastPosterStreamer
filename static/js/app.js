@@ -83,6 +83,13 @@ class ChromecastSlideshowController {
 
         // Playlist events
         this.clearPlaylistBtn.addEventListener('click', () => this.clearPlaylist());
+
+        // Reconnect when tab becomes visible again (browser throttles WebSocket heartbeat in background)
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden && !this.isConnected) {
+                this.socket.connect();
+            }
+        });
     }
 
     setupSocketEventListeners() {
