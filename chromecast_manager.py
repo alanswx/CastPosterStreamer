@@ -5,12 +5,12 @@ from typing import List, Dict, Any, Optional
 import socket
 import json
 
+import subprocess as _subprocess  # Use stdlib subprocess (monkey-patched by gevent if available)
+
 try:
     import gevent
-    import gevent.subprocess as gevent_subprocess
     GEVENT_AVAILABLE = True
 except ImportError:
-    gevent_subprocess = None
     GEVENT_AVAILABLE = False
 
 # Note: CATT/pychromecast operations are now handled via subprocess to avoid asyncio threading conflicts
@@ -33,13 +33,11 @@ class ChromecastManager:
         self.logger.info("Starting Chromecast device discovery via subprocess...")
         
         try:
-            import json
             import os
-            subprocess = gevent_subprocess if GEVENT_AVAILABLE else __import__('subprocess')
 
             # Use subprocess to avoid asyncio threading conflicts
             script_path = os.path.join(os.path.dirname(__file__), 'chromecast_subprocess.py')
-            result = subprocess.run([
+            result = _subprocess.run([
                 'python3', script_path, 'discover'
             ], capture_output=True, text=True, timeout=timeout + 10)
             
@@ -148,28 +146,33 @@ class ChromecastManager:
                 self.logger.error(f"Device {uuid} not found")
                 return False
 
-            import json
             import os
-            subprocess = gevent_subprocess if GEVENT_AVAILABLE else __import__('subprocess')
 
-            # Use Popen directly so we can ensure the subprocess is killed on timeout/cancel
             script_path = os.path.join(os.path.dirname(__file__), 'chromecast_subprocess.py')
-            proc = subprocess.Popen([
+            proc = _subprocess.Popen([
                 'python3', script_path, 'send_image',
                 '--device-name', device['name'],
                 '--image-url', image_url
-            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            ], stdout=_subprocess.PIPE, stderr=_subprocess.PIPE)
 
-            try:
-                stdout, stderr = proc.communicate(timeout=15)
-            except Exception:
-                # Timeout or greenlet killed - ensure subprocess is dead
-                proc.kill()
-                try:
-                    proc.wait(timeout=3)
-                except Exception:
-                    pass
-                raise
+            # Poll for completion with explicit yields to keep the gevent hub alive.
+            # Do NOT use proc.communicate(timeout=N) — it blocks the hub in py2app bundles.
+            deadline = time.time() + 15
+            while proc.poll() is None:
+                if time.time() > deadline:
+                    proc.kill()
+                    proc.wait()
+                    self.logger.error(f"Subprocess timed out sending to {device['name']}")
+                    return False
+                if GEVENT_AVAILABLE:
+                    gevent.sleep(0.5)
+                else:
+                    time.sleep(0.5)
+
+            stdout = proc.stdout.read()
+            stderr = proc.stderr.read()
+            proc.stdout.close()
+            proc.stderr.close()
 
             if proc.returncode == 0:
                 data = json.loads(stdout.decode().strip())
@@ -184,11 +187,10 @@ class ChromecastManager:
                 return False
 
         except Exception as e:
-            # Ensure subprocess is cleaned up on any error
             if proc and proc.poll() is None:
                 try:
                     proc.kill()
-                    proc.wait(timeout=3)
+                    proc.wait()
                 except Exception:
                     pass
             device = self.get_device_by_uuid(uuid)
@@ -256,13 +258,11 @@ class ChromecastManager:
             if not device:
                 return None
             
-            import json
             import os
-            subprocess = gevent_subprocess if GEVENT_AVAILABLE else __import__('subprocess')
 
             # Use subprocess to avoid asyncio threading conflicts
             script_path = os.path.join(os.path.dirname(__file__), 'chromecast_subprocess.py')
-            result = subprocess.run([
+            result = _subprocess.run([
                 'python3', script_path, 'get_status',
                 '--device-name', device['name']
             ], capture_output=True, text=True, timeout=10)
