@@ -5,11 +5,12 @@
 #   - Patched subprocess nullifies _posixsubprocess, breaking stdlib Popen
 # Flask-SocketIO only needs socket/threading/time/select patches to work.
 
-# Save real threading primitives BEFORE monkey patching replaces them.
-# We need a real OS thread for the watchdog that monitors the gevent hub —
-# if the hub freezes, a real thread keeps running and can dump diagnostics.
-import threading as _pre_patch_threading
-_RealThread = _pre_patch_threading.Thread
+# Save raw thread-creation and sleep BEFORE monkey patching replaces them.
+# We need a real OS thread for the watchdog that monitors the gevent hub.
+# _thread.start_new_thread is the lowest-level API — monkey patching can
+# intercept threading.Thread but cannot intercept a saved reference to this.
+import _thread as _low_level_thread
+_raw_start_new_thread = _low_level_thread.start_new_thread
 import time as _pre_patch_time
 _real_time_sleep = _pre_patch_time.sleep
 
@@ -743,9 +744,9 @@ if __name__ == '__main__':
         # Start hub heartbeat monitor
         socketio.start_background_task(_hub_heartbeat)
 
-        # Start watchdog (real OS thread — immune to hub freezes)
-        _watchdog = _RealThread(target=_watchdog_thread_func, daemon=True)
-        _watchdog.start()
+        # Start watchdog (raw OS thread via _thread.start_new_thread — immune
+        # to hub freezes because it bypasses monkey-patched threading entirely)
+        _raw_start_new_thread(_watchdog_thread_func, ())
         logger.info("Watchdog thread started (will dump stacks if hub freezes for >10s)")
 
         socketio.run(app, host='0.0.0.0', port=5001, debug=False, allow_unsafe_werkzeug=True)
