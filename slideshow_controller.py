@@ -638,13 +638,13 @@ class SlideshowController:
         if not self.image_server.start():
             self.logger.error("Failed to start image server")
             return False
-        
-        # Send initial images to devices (but don't start regular slideshow thread)
+
+        # Don't send initial images here - the inner loop handles it
+        # via last_image_time = 0 which triggers an immediate first send
         enabled_devices = self.chromecast_manager.get_enabled_devices()
         if enabled_devices:
-            self._distribute_images_to_devices(images, enabled_devices)
             self.logger.info(f"Starting playlist directory: {os.path.basename(directory)} with {len(images)} images to {len(enabled_devices)} devices")
-        
+
         return True
     
     def get_playlist_status(self) -> Dict[str, Any]:

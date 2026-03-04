@@ -141,6 +141,7 @@ class ChromecastManager:
     
     def send_image_to_device(self, uuid: str, image_url: str) -> bool:
         """Send an image to a specific Chromecast device using subprocess."""
+        proc = None
         try:
             device = self.get_device_by_uuid(uuid)
             if not device:
@@ -151,16 +152,27 @@ class ChromecastManager:
             import os
             subprocess = gevent_subprocess if GEVENT_AVAILABLE else __import__('subprocess')
 
-            # Use subprocess to avoid asyncio threading conflicts
+            # Use Popen directly so we can ensure the subprocess is killed on timeout/cancel
             script_path = os.path.join(os.path.dirname(__file__), 'chromecast_subprocess.py')
-            result = subprocess.run([
+            proc = subprocess.Popen([
                 'python3', script_path, 'send_image',
                 '--device-name', device['name'],
                 '--image-url', image_url
-            ], capture_output=True, text=True, timeout=15)
-            
-            if result.returncode == 0:
-                data = json.loads(result.stdout.strip())
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+            try:
+                stdout, stderr = proc.communicate(timeout=15)
+            except Exception:
+                # Timeout or greenlet killed - ensure subprocess is dead
+                proc.kill()
+                try:
+                    proc.wait(timeout=3)
+                except Exception:
+                    pass
+                raise
+
+            if proc.returncode == 0:
+                data = json.loads(stdout.decode().strip())
                 if data.get('success'):
                     self.logger.info(f"Sent image {image_url} to {device['name']}")
                     return True
@@ -168,10 +180,17 @@ class ChromecastManager:
                     self.logger.error(f"Failed to send image: {data.get('error')}")
                     return False
             else:
-                self.logger.error(f"Image send subprocess failed: {result.stderr}")
+                self.logger.error(f"Image send subprocess failed: {stderr.decode()}")
                 return False
-                
+
         except Exception as e:
+            # Ensure subprocess is cleaned up on any error
+            if proc and proc.poll() is None:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=3)
+                except Exception:
+                    pass
             device = self.get_device_by_uuid(uuid)
             device_name = device['name'] if device else uuid
             self.logger.error(f"Failed to send image to {device_name}: {e}")
@@ -198,6 +217,11 @@ class ChromecastManager:
             greenlets = [gevent.spawn(send_to_device, uuid, url)
                          for uuid, url in zip(device_uuids, image_urls)]
             gevent.joinall(greenlets, timeout=10)
+            # Kill any greenlets that didn't finish in time to prevent
+            # orphaned subprocesses from accumulating and wedging the hub
+            for g in greenlets:
+                if not g.dead:
+                    g.kill(block=False)
         else:
             # Fallback to threading
             for uuid, url in zip(device_uuids, image_urls):
