@@ -33,21 +33,28 @@ class ChromecastManager:
 
         Pipe reads block the gevent event loop in py2app bundles, so we redirect
         stdout to a temp file and poll for completion with explicit gevent.sleep().
+        Uses BaseException handler to ensure subprocess cleanup on GreenletExit.
         """
         import os
         import tempfile
 
+        cmd_label = ' '.join(args[2:4]) if len(args) > 3 else ' '.join(args)
+        self.logger.info(f"[SUBPROCESS] Starting: {cmd_label}")
+
         tmp_fd, tmp_path = tempfile.mkstemp(suffix='.json')
         tmp_file = os.fdopen(tmp_fd, 'w')
         proc = None
+        start_time = time.time()
         try:
             proc = _subprocess.Popen(args, stdout=tmp_file, stderr=_subprocess.DEVNULL)
             tmp_file.close()
             tmp_file = None
+            self.logger.info(f"[SUBPROCESS] PID {proc.pid} launched for: {cmd_label}")
 
-            deadline = time.time() + timeout
+            deadline = start_time + timeout
             while proc.poll() is None:
                 if time.time() > deadline:
+                    self.logger.warning(f"[SUBPROCESS] PID {proc.pid} timed out after {timeout}s, killing")
                     proc.kill()
                     proc.wait()
                     return None, "subprocess timed out"
@@ -56,6 +63,9 @@ class ChromecastManager:
                 else:
                     time.sleep(0.5)
 
+            elapsed = time.time() - start_time
+            self.logger.info(f"[SUBPROCESS] PID {proc.pid} exited rc={proc.returncode} in {elapsed:.1f}s")
+
             with open(tmp_path, 'r') as f:
                 output = f.read().strip()
 
@@ -63,14 +73,20 @@ class ChromecastManager:
                 return json.loads(output), None
             else:
                 return None, f"subprocess failed (rc={proc.returncode})"
-        except Exception as e:
+        except BaseException as e:
+            # Catch BaseException (including GreenletExit) to ensure subprocess cleanup.
+            # Without this, killed greenlets leave orphaned subprocesses holding
+            # Chromecast connections, eventually exhausting device connection limits.
             if proc and proc.poll() is None:
+                self.logger.warning(f"[SUBPROCESS] Killing PID {proc.pid} due to {type(e).__name__}")
                 try:
                     proc.kill()
                     proc.wait()
                 except Exception:
                     pass
-            return None, str(e)
+            if isinstance(e, Exception):
+                return None, str(e)
+            raise  # Re-raise GreenletExit / KeyboardInterrupt after cleanup
         finally:
             if tmp_file and not tmp_file.closed:
                 tmp_file.close()
@@ -212,37 +228,40 @@ class ChromecastManager:
         """Send different images to multiple devices simultaneously."""
         results = {}
         threads = []
-        
+
+        self.logger.info(f"[MULTI-SEND] Sending to {len(device_uuids)} devices")
+
         # Ensure we have enough images for all devices
         if len(image_urls) < len(device_uuids):
-            # Repeat images if we don't have enough
             repeated_urls = []
             for i, uuid in enumerate(device_uuids):
                 repeated_urls.append(image_urls[i % len(image_urls)])
             image_urls = repeated_urls
-        
+
         def send_to_device(uuid, url):
             results[uuid] = self.send_image_to_device(uuid, url)
 
         if GEVENT_AVAILABLE:
-            # Use gevent greenlets so joinall properly yields to the event loop
             greenlets = [gevent.spawn(send_to_device, uuid, url)
                          for uuid, url in zip(device_uuids, image_urls)]
-            gevent.joinall(greenlets, timeout=10)
-            # Kill any greenlets that didn't finish in time to prevent
-            # orphaned subprocesses from accumulating and wedging the hub
+            self.logger.info(f"[MULTI-SEND] Spawned {len(greenlets)} greenlets, waiting with joinall(timeout=20)")
+            gevent.joinall(greenlets, timeout=20)
+            killed = 0
             for g in greenlets:
                 if not g.dead:
                     g.kill(block=False)
+                    killed += 1
+            if killed:
+                self.logger.warning(f"[MULTI-SEND] Killed {killed} timed-out greenlets")
+            self.logger.info(f"[MULTI-SEND] Done: {sum(1 for v in results.values() if v)}/{len(device_uuids)} successful")
         else:
-            # Fallback to threading
             for uuid, url in zip(device_uuids, image_urls):
                 thread = threading.Thread(target=send_to_device, args=(uuid, url))
                 threads.append(thread)
                 thread.start()
             for thread in threads:
                 thread.join(timeout=10)
-        
+
         return results
     
     def disconnect_device(self, uuid: str):

@@ -538,194 +538,74 @@ def handle_test_websocket():
 
 @socketio.on('discover_devices')
 def handle_discover_devices():
-    """Trigger device discovery using subprocess to avoid asyncio conflicts."""
+    """Trigger device discovery using chromecast_manager (temp-file subprocess)."""
     global discovery_running
-    
+
     with discovery_lock:
         if discovery_running:
             logger.warning("Discovery already in progress, ignoring request")
             socketio.emit('error', {'message': 'Device discovery already in progress'})
             return
-        
         discovery_running = True
-    
+
     try:
         logger.info("Starting device discovery...")
         socketio.emit('discovery_started')
-        import subprocess
-        import json
-        import threading
-        
+
         def discovery_worker():
             try:
-                # Run discovery in a separate process to avoid asyncio conflicts
-                result = subprocess.run([
-                    'python3', '-c', '''
-import json
-from catt.discovery import get_cast_infos
-
-try:
-    cast_infos = get_cast_infos()
-    devices = []
-    for cast_info in cast_infos:
-        device_info = {
-            "uuid": str(cast_info.uuid),
-            "name": cast_info.friendly_name,
-            "host": cast_info.host,
-            "port": cast_info.port,
-            "model": cast_info.model_name,
-            "manufacturer": cast_info.manufacturer,
-            "status": "available",
-            "cast_type": "cast"
-        }
-        devices.append(device_info)
-    print(json.dumps(devices))
-except Exception as e:
-    print(json.dumps({"error": str(e)}))
-'''
-                ], capture_output=True, text=True, timeout=15)
-                
-                if result.returncode == 0:
-                    try:
-                        data = json.loads(result.stdout.strip())
-                        if isinstance(data, dict) and "error" in data:
-                            logger.error(f"Discovery subprocess error: {data['error']}")
-                            socketio.emit('error', {'message': data['error']})
-                        else:
-                            # Save discovered devices to database
-                            for device in data:
-                                settings_manager.save_device(
-                                    device['uuid'],
-                                    device['name'], 
-                                    device['host'],
-                                    device['port']
-                                )
-                                # Update manager's discovered devices
-                                chromecast_manager.discovered_devices[device['uuid']] = device
-                            
-                            socketio.emit('devices_discovered', data)
-                            logger.info(f"Discovery completed, found {len(data)} devices")
-                    except json.JSONDecodeError as e:
-                        logger.error(f"Failed to parse discovery results: {e}")
-                        socketio.emit('error', {'message': 'Failed to parse discovery results'})
+                devices = chromecast_manager.discover_devices(timeout=5)
+                if devices:
+                    socketio.emit('devices_discovered', devices)
+                    logger.info(f"Discovery completed, found {len(devices)} devices")
                 else:
-                    logger.error(f"Discovery subprocess failed: {result.stderr}")
-                    socketio.emit('error', {'message': 'Device discovery failed'})
-                    
-            except subprocess.TimeoutExpired:
-                logger.error("Discovery timeout")
-                socketio.emit('error', {'message': 'Discovery timeout - please try again'})
+                    logger.warning("Discovery completed but found no devices")
             except Exception as e:
                 logger.error(f"Error in discovery worker: {e}")
                 socketio.emit('error', {'message': str(e)})
             finally:
-                # Always reset discovery_running flag when worker finishes
                 global discovery_running
                 with discovery_lock:
                     discovery_running = False
                 socketio.emit('discovery_finished')
-        
-        # Run discovery using socketio background task to work with gevent
+
         socketio.start_background_task(discovery_worker)
-        
+
     except Exception as e:
         logger.error(f"Error starting device discovery: {e}")
+        with discovery_lock:
+            discovery_running = False
         emit('error', {'message': str(e)})
 
 
 def start_auto_discovery():
     """Start automatic device discovery after a short delay to let the server initialize."""
-    import time
     import gevent
-    
-    def delayed_discovery_worker():
-        gevent.sleep(5)  # Wait for server to be ready and potential clients to connect
+
+    def delayed_discovery():
+        gevent.sleep(5)
         logger.info("Starting automatic device discovery...")
-        
-        # Trigger discovery using the same mechanism as WebSocket
+
         global discovery_running
         with discovery_lock:
             if discovery_running:
-                return  # Already running
+                return
             discovery_running = True
-    
-    try:
-        # Notify frontend that auto-discovery is starting
-        socketio.emit('discovery_started')
-        
-        import subprocess
-        import json
-        
-        def discovery_worker():
-            try:
-                result = subprocess.run([
-                    'python3', '-c', '''
-import json
-from catt.discovery import get_cast_infos
 
-try:
-    cast_infos = get_cast_infos()
-    devices = []
-    for cast_info in cast_infos:
-        device_info = {
-            "uuid": str(cast_info.uuid),
-            "name": cast_info.friendly_name,
-            "host": cast_info.host,
-            "port": cast_info.port,
-            "model": cast_info.model_name,
-            "manufacturer": cast_info.manufacturer,
-            "status": "available",
-            "cast_type": "cast"
-        }
-        devices.append(device_info)
-    print(json.dumps(devices))
-except Exception as e:
-    print(json.dumps({"error": str(e)}))
-'''
-                ], capture_output=True, text=True, timeout=15)
-                
-                if result.returncode == 0:
-                    try:
-                        data = json.loads(result.stdout.strip())
-                        if isinstance(data, dict) and "error" in data:
-                            logger.error(f"Auto-discovery subprocess error: {data['error']}")
-                        else:
-                            # Save discovered devices to database
-                            for device in data:
-                                settings_manager.save_device(
-                                    device['uuid'],
-                                    device['name'],
-                                    device['host'],
-                                    device['port']
-                                )
-                                # Update manager's discovered devices
-                                chromecast_manager.discovered_devices[device['uuid']] = device
-                            
-                            # Always emit discovery events - clients will receive when they connect
-                            socketio.emit('devices_discovered', data)  
-                            logger.info(f"Auto-discovery completed, found {len(data)} devices")
-                    except json.JSONDecodeError as e:
-                        logger.error(f"Failed to parse auto-discovery results: {e}")
-                else:
-                    logger.error(f"Auto-discovery subprocess failed: {result.stderr}")
-                    
-            except subprocess.TimeoutExpired:
-                logger.warning("Auto-discovery timeout - continuing without discovery")
-            except Exception as e:
-                logger.warning(f"Auto-discovery error: {e}")
-            finally:
-                global discovery_running
-                with discovery_lock:
-                    discovery_running = False
-                socketio.emit('discovery_finished')
-        
-        # Run discovery using socketio background task to work with gevent
-        socketio.start_background_task(discovery_worker)
-        
-    except Exception as e:
-        logger.warning(f"Failed to start auto-discovery: {e}")
-        with discovery_lock:
-            discovery_running = False
+        try:
+            socketio.emit('discovery_started')
+            devices = chromecast_manager.discover_devices(timeout=5)
+            if devices:
+                socketio.emit('devices_discovered', devices)
+                logger.info(f"Auto-discovery completed, found {len(devices)} devices")
+        except Exception as e:
+            logger.warning(f"Auto-discovery error: {e}")
+        finally:
+            with discovery_lock:
+                discovery_running = False
+            socketio.emit('discovery_finished')
+
+    socketio.start_background_task(delayed_discovery)
 
 
 if __name__ == '__main__':
