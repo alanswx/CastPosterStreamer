@@ -28,43 +28,85 @@ class ChromecastManager:
         self._discovery_running = False
         self._discovery_thread = None
     
+    def _run_subprocess(self, args, timeout=15):
+        """Run a subprocess using temp file for output to avoid blocking the gevent hub.
+
+        Pipe reads block the gevent event loop in py2app bundles, so we redirect
+        stdout to a temp file and poll for completion with explicit gevent.sleep().
+        """
+        import os
+        import tempfile
+
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix='.json')
+        tmp_file = os.fdopen(tmp_fd, 'w')
+        proc = None
+        try:
+            proc = _subprocess.Popen(args, stdout=tmp_file, stderr=_subprocess.DEVNULL)
+            tmp_file.close()
+            tmp_file = None
+
+            deadline = time.time() + timeout
+            while proc.poll() is None:
+                if time.time() > deadline:
+                    proc.kill()
+                    proc.wait()
+                    return None, "subprocess timed out"
+                if GEVENT_AVAILABLE:
+                    gevent.sleep(0.5)
+                else:
+                    time.sleep(0.5)
+
+            with open(tmp_path, 'r') as f:
+                output = f.read().strip()
+
+            if proc.returncode == 0 and output:
+                return json.loads(output), None
+            else:
+                return None, f"subprocess failed (rc={proc.returncode})"
+        except Exception as e:
+            if proc and proc.poll() is None:
+                try:
+                    proc.kill()
+                    proc.wait()
+                except Exception:
+                    pass
+            return None, str(e)
+        finally:
+            if tmp_file and not tmp_file.closed:
+                tmp_file.close()
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
     def discover_devices(self, timeout: int = 5) -> List[Dict[str, Any]]:
         """Discover Chromecast devices using subprocess to avoid threading issues."""
         self.logger.info("Starting Chromecast device discovery via subprocess...")
-        
+
         try:
             import os
-
-            # Use subprocess to avoid asyncio threading conflicts
             script_path = os.path.join(os.path.dirname(__file__), 'chromecast_subprocess.py')
-            result = _subprocess.run([
-                'python3', script_path, 'discover'
-            ], capture_output=True, text=True, timeout=timeout + 10)
-            
-            if result.returncode == 0:
-                data = json.loads(result.stdout.strip())
-                if data.get('success'):
-                    devices = data.get('devices', [])
-                    
-                    # Update internal state and database
-                    for device in devices:
-                        self.discovered_devices[device['uuid']] = device
-                        self.settings_manager.save_device(
-                            device['uuid'],
-                            device['name'],
-                            device['host'],
-                            device['port']
-                        )
-                    
-                    self.logger.info(f"Discovered {len(devices)} Chromecast devices")
-                    return devices
-                else:
-                    self.logger.error(f"Discovery subprocess error: {data.get('error')}")
-                    return []
+            data, error = self._run_subprocess(
+                ['python3', script_path, 'discover'],
+                timeout=timeout + 10
+            )
+
+            if data and data.get('success'):
+                devices = data.get('devices', [])
+                for device in devices:
+                    self.discovered_devices[device['uuid']] = device
+                    self.settings_manager.save_device(
+                        device['uuid'],
+                        device['name'],
+                        device['host'],
+                        device['port']
+                    )
+                self.logger.info(f"Discovered {len(devices)} Chromecast devices")
+                return devices
             else:
-                self.logger.error(f"Discovery subprocess failed: {result.stderr}")
+                self.logger.error(f"Discovery failed: {error or data.get('error', 'unknown')}")
                 return []
-                
+
         except Exception as e:
             self.logger.error(f"Error during device discovery: {e}")
             return []
@@ -139,7 +181,6 @@ class ChromecastManager:
     
     def send_image_to_device(self, uuid: str, image_url: str) -> bool:
         """Send an image to a specific Chromecast device using subprocess."""
-        proc = None
         try:
             device = self.get_device_by_uuid(uuid)
             if not device:
@@ -147,52 +188,21 @@ class ChromecastManager:
                 return False
 
             import os
-
             script_path = os.path.join(os.path.dirname(__file__), 'chromecast_subprocess.py')
-            proc = _subprocess.Popen([
+            data, error = self._run_subprocess([
                 'python3', script_path, 'send_image',
                 '--device-name', device['name'],
                 '--image-url', image_url
-            ], stdout=_subprocess.PIPE, stderr=_subprocess.PIPE)
+            ], timeout=15)
 
-            # Poll for completion with explicit yields to keep the gevent hub alive.
-            # Do NOT use proc.communicate(timeout=N) — it blocks the hub in py2app bundles.
-            deadline = time.time() + 15
-            while proc.poll() is None:
-                if time.time() > deadline:
-                    proc.kill()
-                    proc.wait()
-                    self.logger.error(f"Subprocess timed out sending to {device['name']}")
-                    return False
-                if GEVENT_AVAILABLE:
-                    gevent.sleep(0.5)
-                else:
-                    time.sleep(0.5)
-
-            stdout = proc.stdout.read()
-            stderr = proc.stderr.read()
-            proc.stdout.close()
-            proc.stderr.close()
-
-            if proc.returncode == 0:
-                data = json.loads(stdout.decode().strip())
-                if data.get('success'):
-                    self.logger.info(f"Sent image {image_url} to {device['name']}")
-                    return True
-                else:
-                    self.logger.error(f"Failed to send image: {data.get('error')}")
-                    return False
+            if data and data.get('success'):
+                self.logger.info(f"Sent image {image_url} to {device['name']}")
+                return True
             else:
-                self.logger.error(f"Image send subprocess failed: {stderr.decode()}")
+                self.logger.error(f"Failed to send image to {device['name']}: {error or (data.get('error') if data else 'unknown')}")
                 return False
 
         except Exception as e:
-            if proc and proc.poll() is None:
-                try:
-                    proc.kill()
-                    proc.wait()
-                except Exception:
-                    pass
             device = self.get_device_by_uuid(uuid)
             device_name = device['name'] if device else uuid
             self.logger.error(f"Failed to send image to {device_name}: {e}")
@@ -257,33 +267,27 @@ class ChromecastManager:
             device = self.get_device_by_uuid(uuid)
             if not device:
                 return None
-            
+
             import os
 
-            # Use subprocess to avoid asyncio threading conflicts
             script_path = os.path.join(os.path.dirname(__file__), 'chromecast_subprocess.py')
-            result = _subprocess.run([
+            data, error = self._run_subprocess([
                 'python3', script_path, 'get_status',
                 '--device-name', device['name']
-            ], capture_output=True, text=True, timeout=10)
-            
-            if result.returncode == 0:
-                data = json.loads(result.stdout.strip())
-                if data.get('success'):
-                    status_info = data.get('status', {})
-                    return {
-                        'uuid': uuid,
-                        'connected': status_info.get('connected', False),
-                        'app_name': status_info.get('app_name', 'Unknown'),
-                        'status': status_info.get('status', 'Unknown')
-                    }
-                else:
-                    self.logger.error(f"Status check failed: {data.get('error')}")
-                    return None
+            ], timeout=10)
+
+            if data and data.get('success'):
+                status_info = data.get('status', {})
+                return {
+                    'uuid': uuid,
+                    'connected': status_info.get('connected', False),
+                    'app_name': status_info.get('app_name', 'Unknown'),
+                    'status': status_info.get('status', 'Unknown')
+                }
             else:
-                self.logger.error(f"Status subprocess failed: {result.stderr}")
+                self.logger.error(f"Status check failed: {error or (data.get('error') if data else 'unknown')}")
                 return None
-                
+
         except Exception as e:
             self.logger.error(f"Error getting status for device {uuid}: {e}")
             return None
