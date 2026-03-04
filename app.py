@@ -645,11 +645,7 @@ def _hub_heartbeat():
     beat = 0
     while True:
         beat += 1
-        try:
-            tp = gevent.get_hub().threadpool
-            logger.info(f"[HEARTBEAT] #{beat}  threadpool size={tp.size} maxsize={tp.maxsize} free={tp.free_count()}")
-        except Exception:
-            logger.info(f"[HEARTBEAT] #{beat}")
+        logger.info(f"[HEARTBEAT] #{beat}")
         gevent.sleep(2)
 
 

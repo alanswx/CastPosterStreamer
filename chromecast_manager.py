@@ -13,28 +13,27 @@ try:
 except ImportError:
     GEVENT_AVAILABLE = False
 
-# Get the REAL time.sleep (not gevent.sleep) for use in threadpool threads.
-# gevent.sleep in a threadpool thread tries to create a Hub and run an event
-# loop in that thread, which can deadlock.
-try:
-    from gevent.monkey import get_original
-    _real_sleep = get_original('time', 'sleep')
-except Exception:
-    _real_sleep = time.sleep
-
 # Note: CATT/pychromecast operations are now handled via subprocess to avoid asyncio threading conflicts
 # No direct imports needed here - all operations go through chromecast_subprocess.py
 
 from settings_manager import SettingsManager
 
 
-def _subprocess_in_thread(args, timeout, logger):
-    """Run a subprocess in a real OS thread (via gevent threadpool).
+def _run_subprocess_greenlet(args, timeout, logger):
+    """Run a subprocess directly from a greenlet (NO threadpool).
 
     Since os and subprocess are NOT monkey-patched (app.py uses
-    monkey.patch_all(subprocess=False, os=False)), all stdlib subprocess
-    and os.waitpid calls work normally here.  We still run in a threadpool
-    thread so the blocking wait doesn't stall the gevent hub.
+    monkey.patch_all(subprocess=False, os=False)), subprocess.Popen()
+    does a real fork+exec which completes in milliseconds, and
+    proc.poll() uses real os.waitpid(WNOHANG) which is non-blocking.
+
+    We use gevent.sleep() for the polling loop, which properly yields
+    to the hub and lets other greenlets run.
+
+    IMPORTANT: We do NOT use gevent's threadpool because monkey-patched
+    threading locks (used by Python's logging module) cause deadlocks
+    when acquired from real OS threads.  Running everything in greenlets
+    on the main thread avoids this entirely.
     """
     import os
     import tempfile
@@ -59,7 +58,12 @@ def _subprocess_in_thread(args, timeout, logger):
                 proc.kill()
                 proc.wait()
                 return None, "subprocess timed out"
-            _real_sleep(0.5)  # Must use real sleep, not gevent.sleep
+            # gevent.sleep yields to the hub, letting other greenlets run.
+            # This is safe because proc.poll() uses unpatched os.waitpid.
+            if GEVENT_AVAILABLE:
+                gevent.sleep(0.5)
+            else:
+                time.sleep(0.5)
 
         elapsed = time.time() - start_time
         logger.info(f"[SUBPROCESS] PID {proc.pid} exited rc={proc.returncode} in {elapsed:.1f}s")
@@ -103,21 +107,16 @@ class ChromecastManager:
         self._discovery_thread = None
 
     def _run_subprocess(self, args, timeout=15):
-        """Run a subprocess in a real OS thread to avoid blocking the gevent hub.
+        """Run a subprocess directly from the current greenlet.
 
-        Offloads to gevent's threadpool so the blocking subprocess.Popen.wait()
-        call doesn't stall greenlets.  os and subprocess are NOT monkey-patched,
-        so all stdlib calls work normally in the thread.
+        Since os and subprocess are NOT monkey-patched, Popen does a real
+        fork+exec (fast, ~1ms) and poll() is non-blocking.  The polling
+        loop uses gevent.sleep() to yield to the hub between checks.
+
+        No threadpool is used — this avoids deadlocks caused by
+        gevent-patched logging locks in real OS threads.
         """
-        cmd_label = ' '.join(args[2:4]) if len(args) > 3 else ' '.join(args)
-        if GEVENT_AVAILABLE:
-            self.logger.info(f"[RUN-SUB] Requesting threadpool thread for: {cmd_label}")
-            result = gevent.get_hub().threadpool.apply(
-                _subprocess_in_thread, (args, timeout, self.logger))
-            self.logger.info(f"[RUN-SUB] Threadpool returned for: {cmd_label}")
-            return result
-        else:
-            return _subprocess_in_thread(args, timeout, self.logger)
+        return _run_subprocess_greenlet(args, timeout, self.logger)
 
     def discover_devices(self, timeout: int = 5) -> List[Dict[str, Any]]:
         """Discover Chromecast devices using subprocess to avoid threading issues."""
@@ -249,22 +248,17 @@ class ChromecastManager:
             return False
 
     def send_image_to_multiple_devices(self, device_uuids: List[str], image_urls: List[str]) -> Dict[str, bool]:
-        """Send different images to multiple devices using real OS threads.
+        """Send different images to multiple devices concurrently.
 
-        Each device gets its own thread (via gevent threadpool) so subprocess
-        calls never interact with the gevent event loop.
+        Each device gets its own greenlet.  Inside each greenlet,
+        _run_subprocess polls with gevent.sleep() so all greenlets
+        run cooperatively on the main thread — no threadpool needed.
         """
         results = {}
         ChromecastManager._send_batch_counter += 1
         batch_num = ChromecastManager._send_batch_counter
 
-        # Log threadpool state before starting
-        try:
-            tp = gevent.get_hub().threadpool
-            self.logger.info(f"[MULTI-SEND] Batch #{batch_num}: Sending to {len(device_uuids)} devices  "
-                             f"(threadpool: size={tp.size} maxsize={tp.maxsize} free={tp.free_count()})")
-        except Exception:
-            self.logger.info(f"[MULTI-SEND] Batch #{batch_num}: Sending to {len(device_uuids)} devices")
+        self.logger.info(f"[MULTI-SEND] Batch #{batch_num}: Sending to {len(device_uuids)} devices")
 
         # Ensure we have enough images for all devices
         if len(image_urls) < len(device_uuids):
@@ -277,9 +271,9 @@ class ChromecastManager:
             results[uuid] = self.send_image_to_device(uuid, url)
 
         if GEVENT_AVAILABLE:
-            # Use real OS threads via gevent's threadpool.  Each call to
-            # _run_subprocess already uses threadpool.apply(), so we just
-            # spawn greenlets that will each block on their thread.
+            # Spawn a greenlet per device.  Each greenlet runs
+            # _run_subprocess_greenlet which uses gevent.sleep() for
+            # polling, so all greenlets cooperate on the main thread.
             greenlets = [gevent.spawn(send_to_device, uuid, url)
                          for uuid, url in zip(device_uuids, image_urls)]
             self.logger.info(f"[MULTI-SEND] Batch #{batch_num}: Spawned {len(greenlets)} greenlets, waiting with joinall(timeout=30)")
@@ -293,9 +287,9 @@ class ChromecastManager:
                 self.logger.warning(f"[MULTI-SEND] Batch #{batch_num}: Killed {killed} timed-out greenlets")
             self.logger.info(f"[MULTI-SEND] Batch #{batch_num}: Done: {sum(1 for v in results.values() if v)}/{len(device_uuids)} successful")
         else:
+            threads = []
             for uuid, url in zip(device_uuids, image_urls):
                 thread = threading.Thread(target=send_to_device, args=(uuid, url))
-                threads = []
                 threads.append(thread)
                 thread.start()
             for thread in threads:
