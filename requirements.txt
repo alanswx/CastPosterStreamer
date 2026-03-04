@@ -9,3 +9,6 @@ pathlib
 rumps==0.4.0
 py2app==0.28.6
 packaging
+Flask-Cors==4.0.1
+gevent
+gevent-websocket

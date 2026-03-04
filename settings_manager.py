@@ -57,6 +57,19 @@ class SettingsManager:
                 )
             """)
             
+            # Playlist items table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS playlist_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    directory_path TEXT NOT NULL,
+                    directory_name TEXT NOT NULL,
+                    duration_minutes INTEGER NOT NULL DEFAULT 10,
+                    order_index INTEGER NOT NULL,
+                    is_valid INTEGER DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
             conn.commit()
             
             # Set default values if they don't exist
@@ -268,3 +281,115 @@ class SettingsManager:
         thumbnail_dir = self.cache_dir / "thumbnails"
         thumbnail_dir.mkdir(exist_ok=True)
         return thumbnail_dir
+    
+    # Playlist management methods
+    def add_playlist_item(self, directory_path: str, directory_name: str, duration_minutes: int = 10) -> int:
+        """Add a new item to the playlist."""
+        import os
+        is_valid = 1 if os.path.exists(directory_path) and os.path.isdir(directory_path) else 0
+        
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            # Get the next order index
+            cursor.execute("SELECT MAX(order_index) FROM playlist_items")
+            max_order = cursor.fetchone()[0]
+            next_order = (max_order or 0) + 1
+            
+            cursor.execute("""
+                INSERT INTO playlist_items (directory_path, directory_name, duration_minutes, order_index, is_valid)
+                VALUES (?, ?, ?, ?, ?)
+            """, (directory_path, directory_name, duration_minutes, next_order, is_valid))
+            
+            conn.commit()
+            return cursor.lastrowid
+    
+    def get_playlist_items(self) -> List[Dict[str, Any]]:
+        """Get all playlist items ordered by order_index."""
+        import os
+        
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, directory_path, directory_name, duration_minutes, order_index, is_valid, created_at
+                FROM playlist_items
+                ORDER BY order_index
+            """)
+            
+            columns = ['id', 'directory_path', 'directory_name', 'duration_minutes', 'order_index', 'is_valid', 'created_at']
+            items = [dict(zip(columns, row)) for row in cursor.fetchall()]
+            
+            # Validate directory paths and update is_valid flag
+            for item in items:
+                current_valid = os.path.exists(item['directory_path']) and os.path.isdir(item['directory_path'])
+                if bool(item['is_valid']) != current_valid:
+                    self.update_playlist_item_validity(item['id'], current_valid)
+                    item['is_valid'] = 1 if current_valid else 0
+            
+            return items
+    
+    def update_playlist_item_validity(self, item_id: int, is_valid: bool):
+        """Update the validity status of a playlist item."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE playlist_items SET is_valid = ? WHERE id = ?
+            """, (1 if is_valid else 0, item_id))
+            conn.commit()
+    
+    def remove_playlist_item(self, item_id: int):
+        """Remove an item from the playlist."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM playlist_items WHERE id = ?", (item_id,))
+            conn.commit()
+            
+            # Reorder remaining items to fill gaps
+            self._reorder_playlist_items()
+    
+    def update_playlist_item_duration(self, item_id: int, duration_minutes: int):
+        """Update the duration of a playlist item."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE playlist_items SET duration_minutes = ? WHERE id = ?
+            """, (duration_minutes, item_id))
+            conn.commit()
+    
+    def reorder_playlist_items(self, item_ids: List[int]):
+        """Reorder playlist items based on provided list of IDs."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            for index, item_id in enumerate(item_ids):
+                cursor.execute("""
+                    UPDATE playlist_items SET order_index = ? WHERE id = ?
+                """, (index + 1, item_id))
+            conn.commit()
+    
+    def _reorder_playlist_items(self):
+        """Internal method to reorder playlist items to fill gaps."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM playlist_items ORDER BY order_index")
+            item_ids = [row[0] for row in cursor.fetchall()]
+            
+            for index, item_id in enumerate(item_ids):
+                cursor.execute("""
+                    UPDATE playlist_items SET order_index = ? WHERE id = ?
+                """, (index + 1, item_id))
+            conn.commit()
+    
+    def clear_playlist(self):
+        """Remove all items from the playlist."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM playlist_items")
+            conn.commit()
+    
+    def get_playlist_total_duration(self) -> int:
+        """Get total duration of all valid playlist items in minutes."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT SUM(duration_minutes) FROM playlist_items WHERE is_valid = 1")
+            result = cursor.fetchone()[0]
+            return result or 0

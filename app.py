@@ -1,28 +1,160 @@
+# CRITICAL: gevent monkey patching must be done FIRST, before any other imports.
+# We skip patching os and subprocess because:
+#   - Patched os.waitpid deadlocks in threadpool threads with concurrent children
+#   - Patched subprocess.Popen requires gevent child watchers (default loop only)
+#   - Patched subprocess nullifies _posixsubprocess, breaking stdlib Popen
+# Flask-SocketIO only needs socket/threading/time/select patches to work.
+
+# Save raw thread-creation and sleep BEFORE monkey patching replaces them.
+# We need a real OS thread for the watchdog that monitors the gevent hub.
+# _thread.start_new_thread is the lowest-level API — monkey patching can
+# intercept threading.Thread but cannot intercept a saved reference to this.
+import _thread as _low_level_thread
+_raw_start_new_thread = _low_level_thread.start_new_thread
+import time as _pre_patch_time
+_real_time_sleep = _pre_patch_time.sleep
+
+import gevent
+from gevent import monkey
+monkey.patch_all(subprocess=False, os=False)
+
 from flask import Flask, render_template, request, jsonify
-from flask_socketio import SocketIO, emit
+from flask_socketio import SocketIO, emit, join_room
+from flask_cors import CORS
 import os
 import threading
 import logging
+import time
 from pathlib import Path
 
 from settings_manager import SettingsManager
 from chromecast_manager import ChromecastManager
 from slideshow_controller import SlideshowController
 
+
 # The 'DATA_FILES' setting in setup.py now correctly copies the 'templates'
 # and 'static' folders, so we can revert to the standard Flask configuration.
 app = Flask(__name__)
+CORS(app)
 app.config['SECRET_KEY'] = 'chromecast-slideshow-secret-key'
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", ping_timeout=60, ping_interval=25)
 
 # Initialize components
 settings_manager = SettingsManager()
 chromecast_manager = ChromecastManager(settings_manager)
-slideshow_controller = SlideshowController(settings_manager, chromecast_manager, socketio)
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Initialize SocketIO with default async mode (auto-detects best backend)
+# socketio = SocketIO(app, cors_allowed_origins="*")  <-- Removed duplicate initialization
+slideshow_controller = SlideshowController(settings_manager, chromecast_manager)
+slideshow_controller.init_app(socketio, app)
+
+# Configure logging — ONLY use a file handler.  DO NOT log to stderr.
+# In a py2app macOS bundle, stderr is a pipe with a finite buffer (~64KB).
+# After enough log output, the pipe fills and write()/flush() blocks the
+# main thread FOREVER, which freezes the gevent hub and kills the app.
+# Writing to a local file (/tmp) never blocks.
+
+class _FlushingFileHandler(logging.FileHandler):
+    """FileHandler that flushes after every log record (crash-safe)."""
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
+
+_root_logger = logging.getLogger()
+_root_logger.setLevel(logging.INFO)
+# Remove ANY pre-existing handlers (e.g. stderr StreamHandler)
+for _h in _root_logger.handlers[:]:
+    _root_logger.removeHandler(_h)
+
+_file_handler = _FlushingFileHandler('/tmp/posters_debug.log', mode='w')
+_file_handler.setLevel(logging.DEBUG)
+_file_handler.setFormatter(logging.Formatter(
+    '%(asctime)s.%(msecs)03d - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%H:%M:%S'))
+logging.getLogger().addHandler(_file_handler)
 logger = logging.getLogger(__name__)
+
+# Install crash signal handlers so we can detect segfaults/bus errors.
+import signal as _signal
+import faulthandler as _faulthandler
+_crash_file = open('/tmp/posters_crash.log', 'w')
+_faulthandler.enable(file=_crash_file, all_threads=True)
+# Also dump tracebacks on SIGUSR1 for debugging live freezes
+_faulthandler.register(_signal.SIGUSR1, file=_crash_file, all_threads=True)
+
+# ── Watchdog: real OS thread that detects hub freezes ──────────────────────
+# The gevent hub runs on the main thread.  If it deadlocks, ALL greenlets
+# stop (heartbeat, tick loop, everything).  A real OS thread is immune to
+# this — it keeps running and can dump diagnostics.
+import gc as _gc
+import sys as _sys
+import traceback as _traceback
+
+_hub_alive_ts = _pre_patch_time.time()        # updated by heartbeat greenlet
+
+
+def _watchdog_thread_func():
+    """Real OS thread that watches the gevent hub.
+
+    If the heartbeat greenlet stops updating _hub_alive_ts for >10 seconds,
+    we know the hub is frozen.  Dump every greenlet's stack plus all thread
+    stacks to /tmp/posters_crash.log so we can see exactly where it's stuck.
+    """
+    crash_path = '/tmp/posters_crash.log'
+    while True:
+        _real_time_sleep(5)
+        elapsed = _pre_patch_time.time() - _hub_alive_ts
+        if elapsed > 10:
+            with open(crash_path, 'a') as f:
+                f.write(f"\n{'=' * 70}\n")
+                f.write(f"WATCHDOG: Hub frozen for {elapsed:.1f}s "
+                        f"at {_pre_patch_time.strftime('%H:%M:%S', _pre_patch_time.localtime())}\n")
+                f.write(f"{'=' * 70}\n\n")
+
+                # 1) All greenlet stacks
+                f.write("=== GREENLET STACKS ===\n\n")
+                greenlet_count = 0
+                try:
+                    for obj in _gc.get_objects():
+                        if isinstance(obj, gevent.Greenlet):
+                            greenlet_count += 1
+                            f.write(f"--- Greenlet {obj!r} ---\n")
+                            f.write(f"    dead={obj.dead}  started={obj.started}\n")
+                            gr_frame = getattr(obj, 'gr_frame', None)
+                            if gr_frame:
+                                _traceback.print_stack(gr_frame, file=f)
+                            else:
+                                f.write("    (no frame — not currently suspended)\n")
+                            f.write("\n")
+                except Exception as exc:
+                    f.write(f"Error iterating greenlets: {exc}\n")
+                f.write(f"Total greenlets found: {greenlet_count}\n\n")
+
+                # 2) Hub state
+                try:
+                    hub = gevent.get_hub()
+                    f.write(f"=== HUB STATE ===\n")
+                    f.write(f"Hub: {hub!r}\n")
+                    gr_frame = getattr(hub, 'gr_frame', None)
+                    if gr_frame:
+                        f.write("Hub stack:\n")
+                        _traceback.print_stack(gr_frame, file=f)
+                    f.write("\n")
+                except Exception as exc:
+                    f.write(f"Error getting hub: {exc}\n\n")
+
+                # 3) All thread stacks (shows where the main thread is stuck)
+                f.write("=== ALL THREAD STACKS ===\n")
+                for tid, frame in _sys._current_frames().items():
+                    f.write(f"\n--- Thread {tid} ---\n")
+                    _traceback.print_stack(frame, file=f)
+
+                f.flush()
+
+            # Don't spam — wait before checking again
+            _real_time_sleep(60)
+
 
 # Discovery state management
 discovery_lock = threading.Lock()
@@ -56,39 +188,36 @@ def save_settings():
 @app.route('/api/directories', methods=['GET'])
 def browse_directories():
     """Browse directory structure for image selection."""
-    path = request.args.get('path', settings_manager.get_selected_directory())
-    
+    explicit_path = request.args.get('path')
+    path = explicit_path or settings_manager.get_selected_directory()
+
+    def list_directory(directory_path):
+        items = []
+        if directory_path.parent != directory_path:
+            items.append({'name': '..', 'path': str(directory_path.parent), 'type': 'directory'})
+        for item in sorted(directory_path.iterdir()):
+            if item.is_dir() and not item.name.startswith('.'):
+                items.append({'name': item.name, 'path': str(item), 'type': 'directory'})
+        return items
+
     try:
         directory_path = Path(path)
         if not directory_path.exists() or not directory_path.is_dir():
             directory_path = Path(os.path.expanduser('~'))
-        
-        items = []
-        
-        # Add parent directory link (except for root)
-        if directory_path.parent != directory_path:
-            items.append({
-                'name': '..',
-                'path': str(directory_path.parent),
-                'type': 'directory'
-            })
-        
-        # Add subdirectories
-        for item in sorted(directory_path.iterdir()):
-            if item.is_dir() and not item.name.startswith('.'):
-                items.append({
-                    'name': item.name,
-                    'path': str(item),
-                    'type': 'directory'
-                })
-        
-        return jsonify({
-            'current_path': str(directory_path),
-            'items': items
-        })
-        
+
+        items = list_directory(directory_path)
+        return jsonify({'current_path': str(directory_path), 'items': items})
+
     except Exception as e:
         logger.error(f"Error browsing directory {path}: {e}")
+        # If we used a stored/default path and it failed, fall back to home
+        if not explicit_path:
+            try:
+                home_path = Path(os.path.expanduser('~'))
+                items = list_directory(home_path)
+                return jsonify({'current_path': str(home_path), 'items': items})
+            except Exception:
+                pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -122,15 +251,64 @@ def get_images():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/directory-images', methods=['GET'])
+def get_directory_images():
+    """Get images from a specific directory for preview."""
+    directory = request.args.get('path')
+    if not directory:
+        return jsonify({'error': 'No directory path provided'}), 400
+    
+    try:
+        images = slideshow_controller.get_images_in_directory(directory)
+        image_data = []
+        
+        # Limit to first 8 images for preview
+        preview_images = images[:8]
+        
+        for img_path in preview_images:
+            img_name = os.path.basename(img_path)
+            # Generate thumbnail for this specific image
+            thumbnail_path = slideshow_controller.generate_thumbnail(img_path)
+            
+            image_data.append({
+                'name': img_name,
+                'path': img_path,
+                'has_thumbnail': thumbnail_path is not None
+            })
+        
+        return jsonify({
+            'directory': directory,
+            'images': image_data,
+            'count': len(images),
+            'total_count': len(images)
+        })
+    except Exception as e:
+        logger.error(f"Error getting images from {directory}: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/thumbnails/<filename>')
 def serve_thumbnail(filename):
     """Serve thumbnail images."""
     try:
         thumbnail_dir = str(settings_manager.get_thumbnail_dir())
         
+        # Check if a specific directory is requested via query parameter
+        requested_dir = request.args.get('dir')
+        if requested_dir:
+            directory = requested_dir
+        else:
+            # Fall back to selected directory
+            directory = settings_manager.get_selected_directory()
+            
+        if not directory:
+            return "No directory specified", 400
+        
         # Find thumbnail by original filename
-        directory = settings_manager.get_selected_directory()
         original_path = os.path.join(directory, filename)
+        if not os.path.exists(original_path):
+            return "Image not found", 404
+            
         thumbnail_path = slideshow_controller.generate_thumbnail(original_path, thumbnail_dir)
         
         if thumbnail_path and os.path.exists(thumbnail_path):
@@ -143,6 +321,7 @@ def serve_thumbnail(filename):
     except Exception as e:
         logger.error(f"Error serving thumbnail for {filename}: {e}")
         return "Error generating thumbnail", 500
+
 
 
 @app.route('/api/devices', methods=['GET'])
@@ -230,10 +409,208 @@ def get_slideshow_status():
     })
 
 
+@app.route('/api/slideshow/skip', methods=['POST'])
+def skip_slideshow():
+    """Skip to next image in single directory slideshow."""
+    try:
+        if slideshow_controller.skip_to_next():
+            return jsonify({'status': 'success'})
+        else:
+            return jsonify({'error': 'No slideshow running'}), 400
+    except Exception as e:
+        logger.error(f"Error skipping slideshow: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# Playlist API endpoints
+@app.route('/api/playlist', methods=['GET'])
+def get_playlist():
+    """Get current playlist items."""
+    items = settings_manager.get_playlist_items()
+    total_duration = settings_manager.get_playlist_total_duration()
+    return jsonify({
+        'items': items,
+        'total_duration': total_duration,
+        'item_count': len(items)
+    })
+
+
+@app.route('/api/playlist/items', methods=['POST'])
+def add_playlist_item():
+    """Add current directory to playlist."""
+    try:
+        current_dir = settings_manager.get_selected_directory()
+        if not current_dir:
+            return jsonify({'error': 'No directory selected'}), 400
+        
+        # Get directory name for display
+        directory_name = os.path.basename(current_dir) or current_dir
+        
+        # Default duration
+        duration = 10
+        
+        item_id = settings_manager.add_playlist_item(current_dir, directory_name, duration)
+        socketio.emit('playlist_updated')
+        
+        return jsonify({
+            'status': 'success',
+            'item_id': item_id
+        })
+    except Exception as e:
+        logger.error(f"Error adding playlist item: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/playlist/items/<int:item_id>', methods=['DELETE'])
+def remove_playlist_item(item_id):
+    """Remove an item from the playlist."""
+    try:
+        settings_manager.remove_playlist_item(item_id)
+        socketio.emit('playlist_updated')
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logger.error(f"Error removing playlist item: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/playlist/items/<int:item_id>/duration', methods=['PUT'])
+def update_playlist_item_duration(item_id):
+    """Update the duration of a playlist item."""
+    data = request.get_json()
+    duration = data.get('duration_minutes')
+    
+    if not duration or duration < 1:
+        return jsonify({'error': 'Invalid duration'}), 400
+    
+    try:
+        settings_manager.update_playlist_item_duration(item_id, duration)
+        socketio.emit('playlist_updated')
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logger.error(f"Error updating playlist item duration: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/playlist/reorder', methods=['PUT'])
+def reorder_playlist():
+    """Reorder playlist items."""
+    data = request.get_json()
+    item_ids = data.get('item_ids', [])
+    
+    if not item_ids:
+        return jsonify({'error': 'No item IDs provided'}), 400
+    
+    try:
+        settings_manager.reorder_playlist_items(item_ids)
+        socketio.emit('playlist_updated')
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logger.error(f"Error reordering playlist: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/playlist/clear', methods=['DELETE'])
+def clear_playlist():
+    """Clear all items from the playlist."""
+    try:
+        settings_manager.clear_playlist()
+        socketio.emit('playlist_updated')
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logger.error(f"Error clearing playlist: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/playlist/start', methods=['POST'])
+def start_playlist():
+    """Start playlist mode slideshow."""
+    try:
+        result = slideshow_controller.start_playlist()
+        logger.info(f"Start playlist result: {result}")
+        
+        # Always emit status update, even if already running (for frontend sync)
+        status = slideshow_controller.get_playlist_status()
+        logger.info(f"Start playlist API - got status from backend: {status}")
+        
+        if result is None:
+            logger.error("start_playlist() returned None - this should not happen")
+            return jsonify({'error': 'Internal error: start_playlist returned None'}), 500
+        
+        if result.get('success'):
+            logger.info("Playlist started successfully - emitting WebSocket events")
+            socketio.emit('playlist_started')
+        else:
+            logger.info(f"Playlist start failed or already running: {result.get('error')}")
+        
+        current_item = status.get('current_item')
+        dir_name = current_item.get('directory_name') if current_item else 'None'
+        logger.info(f"Emitting playlist_status_update: running={status.get('running')}, current_item={dir_name}")
+        socketio.emit('playlist_status_update', status)
+        
+        if result.get('success'):
+            return jsonify({'status': 'success'})
+        else:
+            return jsonify({'error': result.get('error', 'Unknown error')}), 400
+    except Exception as e:
+        logger.error(f"Error starting playlist: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/playlist/pause', methods=['POST'])
+def pause_playlist():
+    """Pause or resume playlist."""
+    try:
+        slideshow_controller.toggle_playlist_pause()
+        socketio.emit('playlist_paused')
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logger.error(f"Error pausing playlist: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/playlist/skip', methods=['POST'])
+def skip_playlist():
+    """Skip to next item in playlist."""
+    try:
+        slideshow_controller.skip_playlist_item()
+        # Note: Controller will handle all WebSocket emissions - removed blocking sleep and duplicate emissions
+        
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logger.error(f"Error skipping playlist item: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/playlist/stop', methods=['POST'])
+def stop_playlist():
+    """Stop playlist mode slideshow."""
+    try:
+        slideshow_controller.stop_playlist()
+        socketio.emit('playlist_stopped')
+        
+        # Send final status update to clear highlighting
+        status = slideshow_controller.get_playlist_status()
+        with app.app_context():
+            socketio.emit('playlist_status_update', status)
+        
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logger.error(f"Error stopping playlist: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/playlist/status', methods=['GET'])
+def get_playlist_status():
+    """Get current playlist execution status."""
+    status = slideshow_controller.get_playlist_status()
+    return jsonify(status)
+
+
 @socketio.on('connect')
 def handle_connect():
     """Handle client connection."""
     logger.info('Client connected')
+    
     
     # Check if discovery is currently running and notify client
     global discovery_running
@@ -259,208 +636,124 @@ def handle_disconnect():
     logger.info('Client disconnected')
 
 
+@socketio.on('test_websocket')
+def handle_test_websocket():
+    """Test WebSocket event handler for debugging."""
+    logger.info("Test WebSocket event received from client")
+    try:
+        # Test immediate emission
+        socketio.emit('test_response', {'message': 'WebSocket test successful', 'timestamp': time.time()})
+        logger.info("Test WebSocket response emitted successfully")
+        
+        # Test emission with Flask app context (like our background threads)
+        with app.app_context():
+            socketio.emit('test_background_response', {'message': 'Background WebSocket test successful', 'timestamp': time.time()})
+        logger.info("Test background WebSocket response emitted successfully")
+        
+    except Exception as e:
+        logger.error(f"Error in test WebSocket handler: {e}")
+        emit('error', {'message': f'Test WebSocket error: {str(e)}'})
+
+
 @socketio.on('discover_devices')
 def handle_discover_devices():
-    """Trigger device discovery using subprocess to avoid asyncio conflicts."""
+    """Trigger device discovery using chromecast_manager (temp-file subprocess)."""
     global discovery_running
-    
+
     with discovery_lock:
         if discovery_running:
             logger.warning("Discovery already in progress, ignoring request")
             socketio.emit('error', {'message': 'Device discovery already in progress'})
             return
-        
         discovery_running = True
-    
+
     try:
         logger.info("Starting device discovery...")
         socketio.emit('discovery_started')
-        import subprocess
-        import json
-        import threading
-        
+
         def discovery_worker():
             try:
-                # Run discovery in a separate process to avoid asyncio conflicts
-                result = subprocess.run([
-                    'python3', '-c', '''
-import json
-from catt.discovery import get_cast_infos
-
-try:
-    cast_infos = get_cast_infos()
-    devices = []
-    for cast_info in cast_infos:
-        device_info = {
-            "uuid": str(cast_info.uuid),
-            "name": cast_info.friendly_name,
-            "host": cast_info.host,
-            "port": cast_info.port,
-            "model": cast_info.model_name,
-            "manufacturer": cast_info.manufacturer,
-            "status": "available",
-            "cast_type": "cast"
-        }
-        devices.append(device_info)
-    print(json.dumps(devices))
-except Exception as e:
-    print(json.dumps({"error": str(e)}))
-'''
-                ], capture_output=True, text=True, timeout=15)
-                
-                if result.returncode == 0:
-                    try:
-                        data = json.loads(result.stdout.strip())
-                        if isinstance(data, dict) and "error" in data:
-                            logger.error(f"Discovery subprocess error: {data['error']}")
-                            socketio.emit('error', {'message': data['error']})
-                        else:
-                            # Save discovered devices to database
-                            for device in data:
-                                settings_manager.save_device(
-                                    device['uuid'],
-                                    device['name'], 
-                                    device['host'],
-                                    device['port']
-                                )
-                                # Update manager's discovered devices
-                                chromecast_manager.discovered_devices[device['uuid']] = device
-                            
-                            socketio.emit('devices_discovered', data)
-                            logger.info(f"Discovery completed, found {len(data)} devices")
-                    except json.JSONDecodeError as e:
-                        logger.error(f"Failed to parse discovery results: {e}")
-                        socketio.emit('error', {'message': 'Failed to parse discovery results'})
+                devices = chromecast_manager.discover_devices(timeout=5)
+                if devices:
+                    socketio.emit('devices_discovered', devices)
+                    logger.info(f"Discovery completed, found {len(devices)} devices")
                 else:
-                    logger.error(f"Discovery subprocess failed: {result.stderr}")
-                    socketio.emit('error', {'message': 'Device discovery failed'})
-                    
-            except subprocess.TimeoutExpired:
-                logger.error("Discovery timeout")
-                socketio.emit('error', {'message': 'Discovery timeout - please try again'})
+                    logger.warning("Discovery completed but found no devices")
             except Exception as e:
                 logger.error(f"Error in discovery worker: {e}")
                 socketio.emit('error', {'message': str(e)})
             finally:
-                # Always reset discovery_running flag when worker finishes
                 global discovery_running
                 with discovery_lock:
                     discovery_running = False
                 socketio.emit('discovery_finished')
-        
-        # Run discovery in a separate thread to avoid blocking
-        thread = threading.Thread(target=discovery_worker)
-        thread.daemon = True
-        thread.start()
-        
+
+        socketio.start_background_task(discovery_worker)
+
     except Exception as e:
         logger.error(f"Error starting device discovery: {e}")
+        with discovery_lock:
+            discovery_running = False
         emit('error', {'message': str(e)})
 
 
 def start_auto_discovery():
     """Start automatic device discovery after a short delay to let the server initialize."""
-    import time
-    time.sleep(5)  # Wait for server to be ready and potential clients to connect
-    logger.info("Starting automatic device discovery...")
-    
-    # Trigger discovery using the same mechanism as WebSocket
-    global discovery_running
-    with discovery_lock:
-        if discovery_running:
-            return  # Already running
-        discovery_running = True
-    
-    try:
-        # Notify frontend that auto-discovery is starting
-        socketio.emit('discovery_started')
-        
-        import subprocess
-        import json
-        
-        def discovery_worker():
-            try:
-                result = subprocess.run([
-                    'python3', '-c', '''
-import json
-from catt.discovery import get_cast_infos
+    import gevent
 
-try:
-    cast_infos = get_cast_infos()
-    devices = []
-    for cast_info in cast_infos:
-        device_info = {
-            "uuid": str(cast_info.uuid),
-            "name": cast_info.friendly_name,
-            "host": cast_info.host,
-            "port": cast_info.port,
-            "model": cast_info.model_name,
-            "manufacturer": cast_info.manufacturer,
-            "status": "available",
-            "cast_type": "cast"
-        }
-        devices.append(device_info)
-    print(json.dumps(devices))
-except Exception as e:
-    print(json.dumps({"error": str(e)}))
-'''
-                ], capture_output=True, text=True, timeout=15)
-                
-                if result.returncode == 0:
-                    try:
-                        data = json.loads(result.stdout.strip())
-                        if isinstance(data, dict) and "error" in data:
-                            logger.error(f"Auto-discovery subprocess error: {data['error']}")
-                        else:
-                            # Save discovered devices to database
-                            for device in data:
-                                settings_manager.save_device(
-                                    device['uuid'],
-                                    device['name'],
-                                    device['host'],
-                                    device['port']
-                                )
-                                # Update manager's discovered devices
-                                chromecast_manager.discovered_devices[device['uuid']] = device
-                            
-                            # Always emit discovery events - clients will receive when they connect
-                            socketio.emit('devices_discovered', data)  
-                            logger.info(f"Auto-discovery completed, found {len(data)} devices")
-                    except json.JSONDecodeError as e:
-                        logger.error(f"Failed to parse auto-discovery results: {e}")
-                else:
-                    logger.error(f"Auto-discovery subprocess failed: {result.stderr}")
-                    
-            except subprocess.TimeoutExpired:
-                logger.warning("Auto-discovery timeout - continuing without discovery")
-            except Exception as e:
-                logger.warning(f"Auto-discovery error: {e}")
-            finally:
-                global discovery_running
-                with discovery_lock:
-                    discovery_running = False
-                socketio.emit('discovery_finished')
-        
-        # Run discovery in a separate thread
-        thread = threading.Thread(target=discovery_worker)
-        thread.daemon = True
-        thread.start()
-        
-    except Exception as e:
-        logger.warning(f"Failed to start auto-discovery: {e}")
+    def delayed_discovery():
+        gevent.sleep(5)
+        logger.info("Starting automatic device discovery...")
+
+        global discovery_running
         with discovery_lock:
-            discovery_running = False
+            if discovery_running:
+                return
+            discovery_running = True
+
+        try:
+            socketio.emit('discovery_started')
+            devices = chromecast_manager.discover_devices(timeout=5)
+            if devices:
+                socketio.emit('devices_discovered', devices)
+                logger.info(f"Auto-discovery completed, found {len(devices)} devices")
+        except Exception as e:
+            logger.warning(f"Auto-discovery error: {e}")
+        finally:
+            with discovery_lock:
+                discovery_running = False
+            socketio.emit('discovery_finished')
+
+    socketio.start_background_task(delayed_discovery)
+
+
+def _hub_heartbeat():
+    """Background greenlet that logs a heartbeat every 2 seconds.
+    When this stops appearing in the log, the gevent hub has frozen."""
+    global _hub_alive_ts
+    beat = 0
+    while True:
+        beat += 1
+        _hub_alive_ts = _pre_patch_time.time()  # Tell watchdog we're alive
+        logger.info(f"[HEARTBEAT] #{beat}")
+        gevent.sleep(2)
 
 
 if __name__ == '__main__':
     try:
         logger.info("Starting Chromecast Slideshow Server...")
-        
-        # Start auto-discovery in a separate thread after server starts
-        auto_discovery_thread = threading.Thread(target=start_auto_discovery)
-        auto_discovery_thread.daemon = True
-        auto_discovery_thread.start()
-        
+
+        # TEMPORARY: Disable auto-discovery to test WebSocket functionality
+        # socketio.start_background_task(start_auto_discovery)
+
+        # Start hub heartbeat monitor
+        socketio.start_background_task(_hub_heartbeat)
+
+        # Start watchdog (raw OS thread via _thread.start_new_thread — immune
+        # to hub freezes because it bypasses monkey-patched threading entirely)
+        _raw_start_new_thread(_watchdog_thread_func, ())
+        logger.info("Watchdog thread started (will dump stacks if hub freezes for >10s)")
+
         socketio.run(app, host='0.0.0.0', port=5001, debug=False, allow_unsafe_werkzeug=True)
         
     except KeyboardInterrupt:

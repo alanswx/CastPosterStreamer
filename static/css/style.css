@@ -116,6 +116,9 @@ header h1 {
 .btn-danger { background: #e74c3c; }
 .btn-danger:hover { background: #c0392b; }
 
+.btn-warning { background: #f39c12; }
+.btn-warning:hover { background: #e67e22; }
+
 /* Directory Browser */
 .directory-browser {
     margin-bottom: 1rem;
@@ -173,6 +176,38 @@ header h1 {
     padding: 2rem;
     text-align: center;
     color: #7f8c8d;
+}
+
+.directory-preview {
+    margin: 1rem 0;
+}
+
+.directory-thumbnail-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(60px, 1fr));
+    gap: 0.5rem;
+    max-height: 150px;
+    overflow-y: auto;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    padding: 0.5rem;
+    background: #f9f9f9;
+}
+
+.directory-thumbnail-grid img {
+    width: 60px;
+    height: 60px;
+    object-fit: cover;
+    border-radius: 3px;
+    border: 1px solid #ddd;
+}
+
+.no-preview {
+    grid-column: 1 / -1;
+    text-align: center;
+    padding: 1rem;
+    color: #7f8c8d;
+    font-size: 0.9rem;
 }
 
 /* Image Grid */
@@ -319,6 +354,233 @@ header h1 {
 .no-devices {
     text-align: center;
     padding: 2rem;
+    color: #7f8c8d;
+}
+
+/* Playlist Management */
+.playlist-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+    gap: 1rem;
+}
+
+.playlist-container {
+    margin-bottom: 1.5rem;
+}
+
+.playlist-list {
+    max-height: 300px;
+    overflow-y: auto;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background: white;
+    margin-bottom: 1rem;
+}
+
+.playlist-item {
+    display: flex;
+    align-items: center;
+    padding: 0.75rem;
+    border-bottom: 1px solid #eee;
+    background: white;
+    transition: all 0.2s;
+    cursor: move;
+}
+
+.playlist-item:last-child {
+    border-bottom: none;
+}
+
+.playlist-item.invalid {
+    opacity: 0.5;
+    background: #f8f8f8;
+    color: #7f8c8d;
+}
+
+/* More specific selector to override any conflicting styles */
+.playlist-container .playlist-list .playlist-item.currently-playing {
+    background-color: #e8f5e8 !important;
+    background: linear-gradient(135deg, #e8f5e8, #f0fff0) !important;
+    border-left: 4px solid #27ae60 !important;
+    border: 2px solid #27ae60 !important;
+    box-shadow: 0 2px 8px rgba(39, 174, 96, 0.4) !important;
+}
+
+/* Fallback with even more specificity */
+.playlist-item.currently-playing {
+    background: linear-gradient(135deg, #e8f5e8, #f0fff0) !important;
+    border-left: 4px solid #27ae60 !important;
+    border: 2px solid #27ae60 !important;
+    box-shadow: 0 2px 8px rgba(39, 174, 96, 0.4) !important;
+}
+
+.playlist-item.currently-playing .playlist-item-name {
+    color: #27ae60;
+    font-weight: 600;
+}
+
+.playlist-item.currently-playing .playlist-item-number {
+    color: #27ae60;
+    background: rgba(39, 174, 96, 0.1);
+    border-radius: 50%;
+    width: 25px;
+    height: 25px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.playlist-item.dragging {
+    opacity: 0.5;
+    transform: rotate(2deg);
+}
+
+.playlist-item.drag-over {
+    border-top: 3px solid #3498db;
+}
+
+.playlist-item-number {
+    font-weight: bold;
+    color: #3498db;
+    min-width: 30px;
+    margin-right: 0.5rem;
+}
+
+.playlist-item-drag-handle {
+    margin-right: 0.5rem;
+    color: #95a5a6;
+    cursor: move;
+    font-size: 1.2rem;
+}
+
+.playlist-item-drag-handle:hover {
+    color: #7f8c8d;
+}
+
+.playlist-item-thumbnail {
+    width: 40px;
+    height: 40px;
+    margin-right: 0.75rem;
+    overflow: hidden;
+    border-radius: 4px;
+    border: 1px solid #ddd;
+    background: #f8f9fa;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.playlist-item-thumbnail .thumbnail-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.playlist-item-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.playlist-item-name {
+    font-weight: 500;
+    color: #2c3e50;
+}
+
+.playlist-item-path {
+    font-size: 0.8rem;
+    color: #7f8c8d;
+    font-family: monospace;
+}
+
+.playlist-item-duration {
+    margin-left: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.playlist-item-duration select {
+    padding: 0.25rem;
+    border: 1px solid #ddd;
+    border-radius: 3px;
+    font-size: 0.9rem;
+    min-width: 70px;
+}
+
+.playlist-item-actions {
+    margin-left: 1rem;
+    display: flex;
+    align-items: center;
+}
+
+.playlist-item-remove {
+    background: transparent;
+    color: #e74c3c;
+    border: none;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+}
+
+.playlist-item-remove:hover {
+    background: rgba(231, 76, 60, 0.1);
+    color: #c0392b;
+    transform: scale(1.1);
+}
+
+.no-playlist-items {
+    text-align: center;
+    padding: 2rem;
+    color: #7f8c8d;
+}
+
+.playlist-actions {
+    text-align: center;
+}
+
+.playlist-controls {
+    background: #f8f9fa;
+    padding: 1rem;
+    border-radius: 4px;
+    border-left: 4px solid #3498db;
+}
+
+.playlist-control-buttons {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+}
+
+.playlist-status {
+    min-height: 1.5rem;
+}
+
+.playlist-progress {
+    font-weight: 500;
+    color: #2c3e50;
+}
+
+.playlist-progress.running {
+    color: #27ae60;
+}
+
+.playlist-progress.paused {
+    color: #f39c12;
+}
+
+.playlist-progress.stopped {
     color: #7f8c8d;
 }
 
@@ -546,4 +808,15 @@ header h1 {
 .device-list::-webkit-scrollbar-thumb:hover,
 .log-container::-webkit-scrollbar-thumb:hover {
     background: #a8a8a8;
+}
+
+.btn-sm {
+    padding: 0.2rem 0.6rem;
+    font-size: 0.8rem;
+}
+
+.directory-shortcuts {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
 }

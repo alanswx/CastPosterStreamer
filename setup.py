@@ -49,7 +49,7 @@ OPTIONS = {
         'com.apple.security.network.client': True,
         'com.apple.security.network.server': True,
     },
-    'packages': ['rumps', 'flask', 'flask_socketio', 'PIL', 'catt', 'pychromecast', 'socketio', 'engineio', 'zeroconf', 'packaging'],
+    'packages': ['rumps', 'flask', 'flask_socketio', 'flask_cors', 'PIL', 'catt', 'pychromecast', 'socketio', 'engineio', 'zeroconf', 'packaging', 'gevent', 'geventwebsocket'],
     'includes': ['subprocess', 'webbrowser', 'threading', 'pathlib', 'json', 'os', 'sys'],
     'excludes': ['tkinter'],
 }
