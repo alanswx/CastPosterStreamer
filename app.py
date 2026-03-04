@@ -1,3 +1,8 @@
+# CRITICAL: Save unpatched subprocess BEFORE gevent monkey patching.
+# Real OS threads need the real subprocess (gevent child watchers only
+# work on the default loop, not in threadpool threads).
+import subprocess as _unpatched_subprocess
+
 # CRITICAL: gevent monkey patching must be done FIRST, before any other imports
 import gevent
 from gevent import monkey
@@ -15,6 +20,12 @@ from pathlib import Path
 from settings_manager import SettingsManager
 from chromecast_manager import ChromecastManager
 from slideshow_controller import SlideshowController
+
+# Inject unpatched subprocess into chromecast_manager.  The threadpool
+# threads need the real subprocess because gevent child watchers only
+# work on the default event loop.
+import chromecast_manager as _cm_module
+_cm_module._subprocess = _unpatched_subprocess
 
 # The 'DATA_FILES' setting in setup.py now correctly copies the 'templates'
 # and 'static' folders, so we can revert to the standard Flask configuration.
