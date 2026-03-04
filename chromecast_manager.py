@@ -5,16 +5,15 @@ from typing import List, Dict, Any, Optional
 import socket
 import json
 
-# Get the ORIGINAL unpatched subprocess module.  gevent's monkey-patched
-# subprocess uses internal child watchers / patched os.waitpid that can
-# deadlock the hub when multiple child processes run concurrently.
+# _subprocess is set to the UNPATCHED stdlib subprocess by app.py before
+# any methods are called.  Fallback to the (possibly monkey-patched) module
+# for standalone / non-gevent usage.
+import subprocess as _subprocess
+
 try:
-    from gevent.monkey import get_original
-    _subprocess = get_original('subprocess')
     import gevent
     GEVENT_AVAILABLE = True
-except (ImportError, AttributeError):
-    import subprocess as _subprocess
+except ImportError:
     GEVENT_AVAILABLE = False
 
 # Note: CATT/pychromecast operations are now handled via subprocess to avoid asyncio threading conflicts
