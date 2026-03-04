@@ -48,12 +48,11 @@ chromecast_manager = ChromecastManager(settings_manager)
 slideshow_controller = SlideshowController(settings_manager, chromecast_manager)
 slideshow_controller.init_app(socketio, app)
 
-# Configure logging — write to both stderr and a persistent file so we can
-# diagnose freezes by inspecting the log after the app crashes.
-# Use a custom handler that flushes after every record so nothing is lost
-# if the process crashes (segfault).
-logging.basicConfig(level=logging.INFO)
-
+# Configure logging — ONLY use a file handler.  DO NOT log to stderr.
+# In a py2app macOS bundle, stderr is a pipe with a finite buffer (~64KB).
+# After enough log output, the pipe fills and write()/flush() blocks the
+# main thread FOREVER, which freezes the gevent hub and kills the app.
+# Writing to a local file (/tmp) never blocks.
 
 class _FlushingFileHandler(logging.FileHandler):
     """FileHandler that flushes after every log record (crash-safe)."""
@@ -61,6 +60,12 @@ class _FlushingFileHandler(logging.FileHandler):
         super().emit(record)
         self.flush()
 
+
+_root_logger = logging.getLogger()
+_root_logger.setLevel(logging.INFO)
+# Remove ANY pre-existing handlers (e.g. stderr StreamHandler)
+for _h in _root_logger.handlers[:]:
+    _root_logger.removeHandler(_h)
 
 _file_handler = _FlushingFileHandler('/tmp/posters_debug.log', mode='w')
 _file_handler.setLevel(logging.DEBUG)

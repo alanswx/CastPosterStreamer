@@ -546,51 +546,37 @@ class SlideshowController:
                     current_time = time.time()
                     elapsed_time = (current_time - item_start_time) + item_accumulated_time
                     since_last_send = current_time - last_image_time
-                    self.logger.info(f"[TICK] elapsed={elapsed_time:.1f}s  since_last_send={since_last_send:.1f}s")
 
                     if elapsed_time >= duration_minutes * 60 or self.skip_requested:
                         if self.skip_requested:
                             self.logger.info("Skip requested, breaking inner loop.")
                             self.skip_requested = False
                         else:
-                            self.logger.info(f"Duration elapsed, breaking inner loop.")
+                            self.logger.info(f"Duration elapsed for {current_item['directory_name']}, moving on.")
                         break
 
                     interval = self.settings_manager.get_slideshow_interval()
                     rotation_on = self.settings_manager.is_rotation_enabled()
                     if rotation_on and since_last_send >= interval:
-                        self.logger.info(f"[TICK] Rotation triggered (interval={interval}s)")
-                        self.logger.info(f"[TICK] Getting enabled devices...")
+                        self.logger.info(f"Rotation triggered at {elapsed_time:.0f}s (interval={interval}s)")
                         enabled_devices = self.chromecast_manager.get_enabled_devices()
-                        self.logger.info(f"[TICK] Got {len(enabled_devices)} enabled devices")
                         if enabled_devices:
-                            self.logger.info(f"[TICK] Getting images from {directory}...")
                             images = self.get_images_in_directory(directory)
-                            self.logger.info(f"[TICK] Got {len(images)} images")
                             if images:
-                                self.logger.info(f"[TICK] Calling _distribute_images_to_devices...")
                                 self._distribute_images_to_devices(images, enabled_devices)
-                                self.logger.info(f"[TICK] _distribute_images_to_devices returned")
                                 last_image_time = current_time
 
-                    self.logger.info(f"[TICK] Sleeping 1s...")
                     self._sleep(1)
-                    self.logger.info(f"[TICK] Woke up from sleep")
-                    
-                    if int(elapsed_time) % 2 == 0:
+
+                    # Emit status update to frontend every 5 seconds
+                    if int(elapsed_time) % 5 == 0:
                         status = self.get_playlist_status()
-                        self.logger.info(f"🔍 DEBUG: Attempting playlist_status_update emission. SocketIO exists: {self.socketio is not None}, App exists: {self.app is not None}")
                         if self.socketio and self.app:
                             try:
                                 with self.app.app_context():
-                                    self.logger.info(f"🔍 DEBUG: Inside app context, about to emit playlist_status_update. Status data: {status}")
                                     self.socketio.emit('playlist_status_update', status)
-                                    self.logger.info("✅ DEBUG: playlist_status_update emission completed successfully")
                             except Exception as e:
-                                self.logger.error(f"❌ DEBUG: Error during playlist_status_update emission: {e}", exc_info=True)
-                        else:
-                            self.logger.warning(f"⚠️ DEBUG: Cannot emit playlist_status_update - SocketIO: {self.socketio is not None}, App: {self.app is not None}")
-                        self.logger.info(f"Periodic status update: running={status.get('running')}, time_remaining={status.get('time_remaining')}")
+                                self.logger.error(f"Error emitting playlist status: {e}")
                     
                     if self.is_playlist_paused and self.playlist_pause_time:
                         item_accumulated_time += self.playlist_pause_time - item_start_time
@@ -622,17 +608,12 @@ class SlideshowController:
         
         # Emit final status update to client
         final_status = self.get_playlist_status()
-        self.logger.info(f"🔍 DEBUG: Attempting FINAL playlist_status_update emission. SocketIO exists: {self.socketio is not None}, App exists: {self.app is not None}")
         if self.socketio and self.app:
             try:
                 with self.app.app_context():
-                    self.logger.info(f"🔍 DEBUG: Inside app context, about to emit FINAL playlist_status_update. Status data: {final_status}")
                     self.socketio.emit('playlist_status_update', final_status)
-                    self.logger.info("✅ DEBUG: FINAL playlist_status_update emission completed successfully")
             except Exception as e:
-                self.logger.error(f"❌ DEBUG: Error during FINAL playlist_status_update emission: {e}", exc_info=True)
-        else:
-            self.logger.warning(f"⚠️ DEBUG: Cannot emit FINAL playlist_status_update - SocketIO: {self.socketio is not None}, App: {self.app is not None}")
+                self.logger.error(f"Error emitting final playlist status: {e}")
         
         self.logger.info("Playlist loop finished.")
     
