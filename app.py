@@ -38,8 +38,15 @@ chromecast_manager = ChromecastManager(settings_manager)
 slideshow_controller = SlideshowController(settings_manager, chromecast_manager)
 slideshow_controller.init_app(socketio, app)
 
-# Configure logging
+# Configure logging — write to both stderr and a persistent file so we can
+# diagnose freezes by inspecting the log after the app crashes.
 logging.basicConfig(level=logging.INFO)
+_file_handler = logging.FileHandler('/tmp/posters_debug.log', mode='w')
+_file_handler.setLevel(logging.DEBUG)
+_file_handler.setFormatter(logging.Formatter(
+    '%(asctime)s.%(msecs)03d - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%H:%M:%S'))
+logging.getLogger().addHandler(_file_handler)
 logger = logging.getLogger(__name__)
 
 # Discovery state management
@@ -613,13 +620,30 @@ def start_auto_discovery():
     socketio.start_background_task(delayed_discovery)
 
 
+def _hub_heartbeat():
+    """Background greenlet that logs a heartbeat every 2 seconds.
+    When this stops appearing in the log, the gevent hub has frozen."""
+    beat = 0
+    while True:
+        beat += 1
+        try:
+            tp = gevent.get_hub().threadpool
+            logger.info(f"[HEARTBEAT] #{beat}  threadpool size={tp.size} maxsize={tp.maxsize} free={tp.free_count()}")
+        except Exception:
+            logger.info(f"[HEARTBEAT] #{beat}")
+        gevent.sleep(2)
+
+
 if __name__ == '__main__':
     try:
         logger.info("Starting Chromecast Slideshow Server...")
-        
+
         # TEMPORARY: Disable auto-discovery to test WebSocket functionality
         # socketio.start_background_task(start_auto_discovery)
-        
+
+        # Start hub heartbeat monitor
+        socketio.start_background_task(_hub_heartbeat)
+
         socketio.run(app, host='0.0.0.0', port=5001, debug=False, allow_unsafe_werkzeug=True)
         
     except KeyboardInterrupt:

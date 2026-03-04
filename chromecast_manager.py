@@ -92,6 +92,8 @@ def _subprocess_in_thread(args, timeout, logger):
 
 
 class ChromecastManager:
+    _send_batch_counter = 0  # Class-level counter for send batches
+
     def __init__(self, settings_manager: SettingsManager):
         self.settings_manager = settings_manager
         self.logger = logging.getLogger(__name__)
@@ -107,9 +109,13 @@ class ChromecastManager:
         call doesn't stall greenlets.  os and subprocess are NOT monkey-patched,
         so all stdlib calls work normally in the thread.
         """
+        cmd_label = ' '.join(args[2:4]) if len(args) > 3 else ' '.join(args)
         if GEVENT_AVAILABLE:
-            return gevent.get_hub().threadpool.apply(
+            self.logger.info(f"[RUN-SUB] Requesting threadpool thread for: {cmd_label}")
+            result = gevent.get_hub().threadpool.apply(
                 _subprocess_in_thread, (args, timeout, self.logger))
+            self.logger.info(f"[RUN-SUB] Threadpool returned for: {cmd_label}")
+            return result
         else:
             return _subprocess_in_thread(args, timeout, self.logger)
 
@@ -249,8 +255,16 @@ class ChromecastManager:
         calls never interact with the gevent event loop.
         """
         results = {}
+        ChromecastManager._send_batch_counter += 1
+        batch_num = ChromecastManager._send_batch_counter
 
-        self.logger.info(f"[MULTI-SEND] Sending to {len(device_uuids)} devices")
+        # Log threadpool state before starting
+        try:
+            tp = gevent.get_hub().threadpool
+            self.logger.info(f"[MULTI-SEND] Batch #{batch_num}: Sending to {len(device_uuids)} devices  "
+                             f"(threadpool: size={tp.size} maxsize={tp.maxsize} free={tp.free_count()})")
+        except Exception:
+            self.logger.info(f"[MULTI-SEND] Batch #{batch_num}: Sending to {len(device_uuids)} devices")
 
         # Ensure we have enough images for all devices
         if len(image_urls) < len(device_uuids):
@@ -268,7 +282,7 @@ class ChromecastManager:
             # spawn greenlets that will each block on their thread.
             greenlets = [gevent.spawn(send_to_device, uuid, url)
                          for uuid, url in zip(device_uuids, image_urls)]
-            self.logger.info(f"[MULTI-SEND] Spawned {len(greenlets)} greenlets, waiting with joinall(timeout=30)")
+            self.logger.info(f"[MULTI-SEND] Batch #{batch_num}: Spawned {len(greenlets)} greenlets, waiting with joinall(timeout=30)")
             gevent.joinall(greenlets, timeout=30)
             killed = 0
             for g in greenlets:
@@ -276,8 +290,8 @@ class ChromecastManager:
                     g.kill(block=False)
                     killed += 1
             if killed:
-                self.logger.warning(f"[MULTI-SEND] Killed {killed} timed-out greenlets")
-            self.logger.info(f"[MULTI-SEND] Done: {sum(1 for v in results.values() if v)}/{len(device_uuids)} successful")
+                self.logger.warning(f"[MULTI-SEND] Batch #{batch_num}: Killed {killed} timed-out greenlets")
+            self.logger.info(f"[MULTI-SEND] Batch #{batch_num}: Done: {sum(1 for v in results.values() if v)}/{len(device_uuids)} successful")
         else:
             for uuid, url in zip(device_uuids, image_urls):
                 thread = threading.Thread(target=send_to_device, args=(uuid, url))
