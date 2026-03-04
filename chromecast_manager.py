@@ -13,6 +13,15 @@ try:
 except ImportError:
     GEVENT_AVAILABLE = False
 
+# Get the REAL time.sleep (not gevent.sleep) for use in threadpool threads.
+# gevent.sleep in a threadpool thread tries to create a Hub and run an event
+# loop in that thread, which can deadlock.
+try:
+    from gevent.monkey import get_original
+    _real_sleep = get_original('time', 'sleep')
+except Exception:
+    _real_sleep = time.sleep
+
 # Note: CATT/pychromecast operations are now handled via subprocess to avoid asyncio threading conflicts
 # No direct imports needed here - all operations go through chromecast_subprocess.py
 
@@ -50,7 +59,7 @@ def _subprocess_in_thread(args, timeout, logger):
                 proc.kill()
                 proc.wait()
                 return None, "subprocess timed out"
-            time.sleep(0.5)
+            _real_sleep(0.5)  # Must use real sleep, not gevent.sleep
 
         elapsed = time.time() - start_time
         logger.info(f"[SUBPROCESS] PID {proc.pid} exited rc={proc.returncode} in {elapsed:.1f}s")
