@@ -5,10 +5,15 @@ from typing import List, Dict, Any, Optional
 import socket
 import json
 
-# _subprocess is set to the UNPATCHED stdlib subprocess by app.py before
-# any methods are called.  Fallback to the (possibly monkey-patched) module
-# for standalone / non-gevent usage.
+# _OrigPopen and _OrigDEVNULL are injected by app.py with the UNPATCHED
+# stdlib Popen class (saved before gevent monkey-patching).  For standalone
+# / non-gevent usage, fall back to the regular subprocess module.
 import subprocess as _subprocess
+
+# These will be overwritten by app.py with the real, unpatched versions.
+# Defaults here allow standalone usage without gevent.
+_OrigPopen = _subprocess.Popen
+_OrigDEVNULL = _subprocess.DEVNULL
 
 try:
     import gevent
@@ -41,7 +46,7 @@ def _subprocess_in_thread(args, timeout, logger):
     proc = None
     start_time = time.time()
     try:
-        proc = _subprocess.Popen(args, stdout=tmp_file, stderr=_subprocess.DEVNULL)
+        proc = _OrigPopen(args, stdout=tmp_file, stderr=_OrigDEVNULL)
         tmp_file.close()
         tmp_file = None
         logger.info(f"[SUBPROCESS] PID {proc.pid} launched for: {cmd_label}")
@@ -65,7 +70,7 @@ def _subprocess_in_thread(args, timeout, logger):
             return json.loads(output), None
         else:
             return None, f"subprocess failed (rc={proc.returncode})"
-    except Exception as e:
+    except BaseException as e:
         if proc and proc.poll() is None:
             logger.warning(f"[SUBPROCESS] Killing PID {proc.pid} due to {type(e).__name__}")
             try:
@@ -73,7 +78,10 @@ def _subprocess_in_thread(args, timeout, logger):
                 proc.wait()
             except Exception:
                 pass
-        return None, str(e)
+        # Re-raise GreenletExit so gevent can clean up the greenlet
+        if isinstance(e, Exception):
+            return None, str(e)
+        raise
     finally:
         if tmp_file and not tmp_file.closed:
             tmp_file.close()
