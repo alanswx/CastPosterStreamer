@@ -22,6 +22,67 @@ except ImportError:
 from settings_manager import SettingsManager
 
 
+def _subprocess_in_thread(args, timeout, logger):
+    """Run a subprocess entirely in a real OS thread.
+
+    This function must NOT call any gevent APIs.  It uses the unpatched
+    subprocess module and regular time.sleep so that gevent's event loop
+    is never involved in child-process management (no SIGCHLD conflicts,
+    no patched os.waitpid deadlocks).
+    """
+    import os
+    import tempfile
+
+    cmd_label = ' '.join(args[2:4]) if len(args) > 3 else ' '.join(args)
+    logger.info(f"[SUBPROCESS] Starting: {cmd_label}")
+
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix='.json')
+    tmp_file = os.fdopen(tmp_fd, 'w')
+    proc = None
+    start_time = time.time()
+    try:
+        proc = _subprocess.Popen(args, stdout=tmp_file, stderr=_subprocess.DEVNULL)
+        tmp_file.close()
+        tmp_file = None
+        logger.info(f"[SUBPROCESS] PID {proc.pid} launched for: {cmd_label}")
+
+        deadline = start_time + timeout
+        while proc.poll() is None:
+            if time.time() > deadline:
+                logger.warning(f"[SUBPROCESS] PID {proc.pid} timed out after {timeout}s, killing")
+                proc.kill()
+                proc.wait()
+                return None, "subprocess timed out"
+            time.sleep(0.5)  # Real sleep, NOT gevent.sleep
+
+        elapsed = time.time() - start_time
+        logger.info(f"[SUBPROCESS] PID {proc.pid} exited rc={proc.returncode} in {elapsed:.1f}s")
+
+        with open(tmp_path, 'r') as f:
+            output = f.read().strip()
+
+        if proc.returncode == 0 and output:
+            return json.loads(output), None
+        else:
+            return None, f"subprocess failed (rc={proc.returncode})"
+    except Exception as e:
+        if proc and proc.poll() is None:
+            logger.warning(f"[SUBPROCESS] Killing PID {proc.pid} due to {type(e).__name__}")
+            try:
+                proc.kill()
+                proc.wait()
+            except Exception:
+                pass
+        return None, str(e)
+    finally:
+        if tmp_file and not tmp_file.closed:
+            tmp_file.close()
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
 class ChromecastManager:
     def __init__(self, settings_manager: SettingsManager):
         self.settings_manager = settings_manager
@@ -30,73 +91,20 @@ class ChromecastManager:
         self.active_devices = {}
         self._discovery_running = False
         self._discovery_thread = None
-    
+
     def _run_subprocess(self, args, timeout=15):
-        """Run a subprocess using temp file for output to avoid blocking the gevent hub.
+        """Run a subprocess in a real OS thread to avoid gevent hub deadlocks.
 
-        Pipe reads block the gevent event loop in py2app bundles, so we redirect
-        stdout to a temp file and poll for completion with explicit gevent.sleep().
-        Uses BaseException handler to ensure subprocess cleanup on GreenletExit.
+        gevent's SIGCHLD handler and patched os.waitpid deadlock the hub when
+        multiple child processes run concurrently.  By offloading to a real
+        thread via gevent's threadpool, subprocess operations are completely
+        outside the event loop.
         """
-        import os
-        import tempfile
-
-        cmd_label = ' '.join(args[2:4]) if len(args) > 3 else ' '.join(args)
-        self.logger.info(f"[SUBPROCESS] Starting: {cmd_label}")
-
-        tmp_fd, tmp_path = tempfile.mkstemp(suffix='.json')
-        tmp_file = os.fdopen(tmp_fd, 'w')
-        proc = None
-        start_time = time.time()
-        try:
-            proc = _subprocess.Popen(args, stdout=tmp_file, stderr=_subprocess.DEVNULL)
-            tmp_file.close()
-            tmp_file = None
-            self.logger.info(f"[SUBPROCESS] PID {proc.pid} launched for: {cmd_label}")
-
-            deadline = start_time + timeout
-            while proc.poll() is None:
-                if time.time() > deadline:
-                    self.logger.warning(f"[SUBPROCESS] PID {proc.pid} timed out after {timeout}s, killing")
-                    proc.kill()
-                    proc.wait()
-                    return None, "subprocess timed out"
-                if GEVENT_AVAILABLE:
-                    gevent.sleep(0.5)
-                else:
-                    time.sleep(0.5)
-
-            elapsed = time.time() - start_time
-            self.logger.info(f"[SUBPROCESS] PID {proc.pid} exited rc={proc.returncode} in {elapsed:.1f}s")
-
-            with open(tmp_path, 'r') as f:
-                output = f.read().strip()
-
-            if proc.returncode == 0 and output:
-                return json.loads(output), None
-            else:
-                return None, f"subprocess failed (rc={proc.returncode})"
-        except BaseException as e:
-            # Catch BaseException (including GreenletExit) to ensure subprocess cleanup.
-            # Without this, killed greenlets leave orphaned subprocesses holding
-            # Chromecast connections, eventually exhausting device connection limits.
-            if proc and proc.poll() is None:
-                self.logger.warning(f"[SUBPROCESS] Killing PID {proc.pid} due to {type(e).__name__}")
-                try:
-                    proc.kill()
-                    proc.wait()
-                except Exception:
-                    pass
-            if isinstance(e, Exception):
-                return None, str(e)
-            raise  # Re-raise GreenletExit / KeyboardInterrupt after cleanup
-        finally:
-            if tmp_file and not tmp_file.closed:
-                tmp_file.close()
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+        if GEVENT_AVAILABLE:
+            return gevent.get_hub().threadpool.apply(
+                _subprocess_in_thread, (args, timeout, self.logger))
+        else:
+            return _subprocess_in_thread(args, timeout, self.logger)
 
     def discover_devices(self, timeout: int = 5) -> List[Dict[str, Any]]:
         """Discover Chromecast devices using subprocess to avoid threading issues."""
@@ -129,24 +137,24 @@ class ChromecastManager:
         except Exception as e:
             self.logger.error(f"Error during device discovery: {e}")
             return []
-    
+
     def start_discovery(self):
         """Start continuous device discovery in background."""
         if self._discovery_running:
             return
-        
+
         self._discovery_running = True
         self._discovery_thread = threading.Thread(target=self._discovery_loop, daemon=True)
         self._discovery_thread.start()
         self.logger.info("Started continuous device discovery")
-    
+
     def stop_discovery(self):
         """Stop continuous device discovery."""
         self._discovery_running = False
         if self._discovery_thread:
             self._discovery_thread.join(timeout=5)
         self.logger.info("Stopped device discovery")
-    
+
     def _discovery_loop(self):
         """Background loop for continuous device discovery."""
         while self._discovery_running:
@@ -158,15 +166,15 @@ class ChromecastManager:
                 time.sleep(10)
             except KeyboardInterrupt:
                 break
-    
+
     def get_all_devices(self) -> List[Dict[str, Any]]:
         """Get all discovered devices with their current status."""
         devices = list(self.discovered_devices.values())
-        
+
         # Update with saved device settings
         saved_devices = self.settings_manager.get_all_devices()
         device_settings = {d['uuid']: d for d in saved_devices}
-        
+
         for device in devices:
             uuid = device['uuid']
             if uuid in device_settings:
@@ -176,28 +184,28 @@ class ChromecastManager:
                 # New devices default to disabled - user must explicitly enable them
                 device['enabled'] = False
                 self.logger.info(f"Device {uuid} ({device['name']}) not in DB, defaulting to disabled")
-        
+
         return devices
-    
+
     def get_enabled_devices(self) -> List[Dict[str, Any]]:
         """Get only enabled devices."""
         all_devices = self.get_all_devices()
         return [d for d in all_devices if d.get('enabled', False)]
-    
+
     def get_device_by_uuid(self, uuid: str) -> Optional[Dict[str, Any]]:
         """Get a specific device by UUID."""
         return self.discovered_devices.get(uuid)
-    
+
     def connect_to_device(self, uuid: str) -> Optional[bool]:
         """Check if device is available (simplified since we use subprocess for operations)."""
         device = self.get_device_by_uuid(uuid)
         if not device:
             self.logger.error(f"Device {uuid} not found")
             return None
-        
+
         # Since we use subprocess for actual operations, just return True if device exists
         return True
-    
+
     def send_image_to_device(self, uuid: str, image_url: str) -> bool:
         """Send an image to a specific Chromecast device using subprocess."""
         try:
@@ -226,11 +234,14 @@ class ChromecastManager:
             device_name = device['name'] if device else uuid
             self.logger.error(f"Failed to send image to {device_name}: {e}")
             return False
-    
+
     def send_image_to_multiple_devices(self, device_uuids: List[str], image_urls: List[str]) -> Dict[str, bool]:
-        """Send different images to multiple devices simultaneously."""
+        """Send different images to multiple devices using real OS threads.
+
+        Each device gets its own thread (via gevent threadpool) so subprocess
+        calls never interact with the gevent event loop.
+        """
         results = {}
-        threads = []
 
         self.logger.info(f"[MULTI-SEND] Sending to {len(device_uuids)} devices")
 
@@ -245,10 +256,13 @@ class ChromecastManager:
             results[uuid] = self.send_image_to_device(uuid, url)
 
         if GEVENT_AVAILABLE:
+            # Use real OS threads via gevent's threadpool.  Each call to
+            # _run_subprocess already uses threadpool.apply(), so we just
+            # spawn greenlets that will each block on their thread.
             greenlets = [gevent.spawn(send_to_device, uuid, url)
                          for uuid, url in zip(device_uuids, image_urls)]
-            self.logger.info(f"[MULTI-SEND] Spawned {len(greenlets)} greenlets, waiting with joinall(timeout=20)")
-            gevent.joinall(greenlets, timeout=20)
+            self.logger.info(f"[MULTI-SEND] Spawned {len(greenlets)} greenlets, waiting with joinall(timeout=30)")
+            gevent.joinall(greenlets, timeout=30)
             killed = 0
             for g in greenlets:
                 if not g.dead:
@@ -260,13 +274,14 @@ class ChromecastManager:
         else:
             for uuid, url in zip(device_uuids, image_urls):
                 thread = threading.Thread(target=send_to_device, args=(uuid, url))
+                threads = []
                 threads.append(thread)
                 thread.start()
             for thread in threads:
-                thread.join(timeout=10)
+                thread.join(timeout=15)
 
         return results
-    
+
     def disconnect_device(self, uuid: str):
         """Disconnect from a specific device."""
         if uuid in self.active_devices:
@@ -277,12 +292,12 @@ class ChromecastManager:
                 self.logger.info(f"Disconnected from device {uuid}")
             except Exception as e:
                 self.logger.error(f"Error disconnecting from device {uuid}: {e}")
-    
+
     def disconnect_all_devices(self):
         """Disconnect from all active devices."""
         for uuid in list(self.active_devices.keys()):
             self.disconnect_device(uuid)
-    
+
     def get_device_status(self, uuid: str) -> Optional[Dict[str, Any]]:
         """Get the current status of a device using subprocess."""
         try:
