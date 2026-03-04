@@ -12,8 +12,10 @@ import subprocess as _subprocess
 
 # These will be overwritten by app.py with the real, unpatched versions.
 # Defaults here allow standalone usage without gevent.
+import os as _os_module
 _OrigPopen = _subprocess.Popen
 _OrigDEVNULL = _subprocess.DEVNULL
+_orig_waitpid = _os_module.waitpid
 
 try:
     import gevent
@@ -27,13 +29,36 @@ except ImportError:
 from settings_manager import SettingsManager
 
 
+def _reap_pid(pid, block=False):
+    """Reap a child process using the UNPATCHED os.waitpid.
+
+    Returns the exit code, or None if the process hasn't exited yet
+    (only when block=False).  Uses _orig_waitpid which is the real
+    stdlib waitpid saved before gevent monkey-patches os.waitpid.
+    """
+    import os
+    flags = 0 if block else os.WNOHANG
+    try:
+        rpid, status = _orig_waitpid(pid, flags)
+    except ChildProcessError:
+        return 0  # Already reaped
+    if rpid == 0:
+        return None  # Still running (non-blocking only)
+    if os.WIFEXITED(status):
+        return os.WEXITSTATUS(status)
+    if os.WIFSIGNALED(status):
+        return -os.WTERMSIG(status)
+    return -1
+
+
 def _subprocess_in_thread(args, timeout, logger):
     """Run a subprocess entirely in a real OS thread.
 
     This function must NOT call any gevent APIs.  It uses the unpatched
-    subprocess module and regular time.sleep so that gevent's event loop
-    is never involved in child-process management (no SIGCHLD conflicts,
-    no patched os.waitpid deadlocks).
+    Popen (_OrigPopen), unpatched os.waitpid (_orig_waitpid), and regular
+    time.sleep so that gevent's event loop is never involved in
+    child-process management (no SIGCHLD conflicts, no patched
+    os.waitpid deadlocks).
     """
     import os
     import tempfile
@@ -49,33 +74,46 @@ def _subprocess_in_thread(args, timeout, logger):
         proc = _OrigPopen(args, stdout=tmp_file, stderr=_OrigDEVNULL)
         tmp_file.close()
         tmp_file = None
-        logger.info(f"[SUBPROCESS] PID {proc.pid} launched for: {cmd_label}")
+        pid = proc.pid
+        logger.info(f"[SUBPROCESS] PID {pid} launched for: {cmd_label}")
 
         deadline = start_time + timeout
-        while proc.poll() is None:
+        rc = None
+        while rc is None:
+            # Use unpatched waitpid — gevent's patched version deadlocks
+            # in threadpool threads when multiple children run concurrently.
+            rc = _reap_pid(pid, block=False)
+            if rc is not None:
+                break
             if time.time() > deadline:
-                logger.warning(f"[SUBPROCESS] PID {proc.pid} timed out after {timeout}s, killing")
-                proc.kill()
-                proc.wait()
+                logger.warning(f"[SUBPROCESS] PID {pid} timed out after {timeout}s, killing")
+                os.kill(pid, 9)
+                _reap_pid(pid, block=True)
+                proc.returncode = -9  # Prevent __del__ from calling patched waitpid
                 return None, "subprocess timed out"
             time.sleep(0.5)  # Real sleep, NOT gevent.sleep
 
+        proc.returncode = rc  # Prevent __del__ from calling patched waitpid
         elapsed = time.time() - start_time
-        logger.info(f"[SUBPROCESS] PID {proc.pid} exited rc={proc.returncode} in {elapsed:.1f}s")
+        logger.info(f"[SUBPROCESS] PID {pid} exited rc={rc} in {elapsed:.1f}s")
 
         with open(tmp_path, 'r') as f:
             output = f.read().strip()
 
-        if proc.returncode == 0 and output:
+        if rc == 0 and output:
             return json.loads(output), None
         else:
-            return None, f"subprocess failed (rc={proc.returncode})"
+            return None, f"subprocess failed (rc={rc})"
     except BaseException as e:
-        if proc and proc.poll() is None:
+        if proc:
             logger.warning(f"[SUBPROCESS] Killing PID {proc.pid} due to {type(e).__name__}")
             try:
-                proc.kill()
-                proc.wait()
+                os.kill(proc.pid, 9)
+            except ProcessLookupError:
+                pass
+            try:
+                _reap_pid(proc.pid, block=True)
+                proc.returncode = -9
             except Exception:
                 pass
         # Re-raise GreenletExit so gevent can clean up the greenlet
