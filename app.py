@@ -4,6 +4,15 @@
 #   - Patched subprocess.Popen requires gevent child watchers (default loop only)
 #   - Patched subprocess nullifies _posixsubprocess, breaking stdlib Popen
 # Flask-SocketIO only needs socket/threading/time/select patches to work.
+
+# Save real threading primitives BEFORE monkey patching replaces them.
+# We need a real OS thread for the watchdog that monitors the gevent hub —
+# if the hub freezes, a real thread keeps running and can dump diagnostics.
+import threading as _pre_patch_threading
+_RealThread = _pre_patch_threading.Thread
+import time as _pre_patch_time
+_real_time_sleep = _pre_patch_time.sleep
+
 import gevent
 from gevent import monkey
 monkey.patch_all(subprocess=False, os=False)
@@ -67,6 +76,79 @@ _crash_file = open('/tmp/posters_crash.log', 'w')
 _faulthandler.enable(file=_crash_file, all_threads=True)
 # Also dump tracebacks on SIGUSR1 for debugging live freezes
 _faulthandler.register(_signal.SIGUSR1, file=_crash_file, all_threads=True)
+
+# ── Watchdog: real OS thread that detects hub freezes ──────────────────────
+# The gevent hub runs on the main thread.  If it deadlocks, ALL greenlets
+# stop (heartbeat, tick loop, everything).  A real OS thread is immune to
+# this — it keeps running and can dump diagnostics.
+import gc as _gc
+import sys as _sys
+import traceback as _traceback
+
+_hub_alive_ts = _pre_patch_time.time()        # updated by heartbeat greenlet
+
+
+def _watchdog_thread_func():
+    """Real OS thread that watches the gevent hub.
+
+    If the heartbeat greenlet stops updating _hub_alive_ts for >10 seconds,
+    we know the hub is frozen.  Dump every greenlet's stack plus all thread
+    stacks to /tmp/posters_crash.log so we can see exactly where it's stuck.
+    """
+    crash_path = '/tmp/posters_crash.log'
+    while True:
+        _real_time_sleep(5)
+        elapsed = _pre_patch_time.time() - _hub_alive_ts
+        if elapsed > 10:
+            with open(crash_path, 'a') as f:
+                f.write(f"\n{'=' * 70}\n")
+                f.write(f"WATCHDOG: Hub frozen for {elapsed:.1f}s "
+                        f"at {_pre_patch_time.strftime('%H:%M:%S', _pre_patch_time.localtime())}\n")
+                f.write(f"{'=' * 70}\n\n")
+
+                # 1) All greenlet stacks
+                f.write("=== GREENLET STACKS ===\n\n")
+                greenlet_count = 0
+                try:
+                    for obj in _gc.get_objects():
+                        if isinstance(obj, gevent.Greenlet):
+                            greenlet_count += 1
+                            f.write(f"--- Greenlet {obj!r} ---\n")
+                            f.write(f"    dead={obj.dead}  started={obj.started}\n")
+                            gr_frame = getattr(obj, 'gr_frame', None)
+                            if gr_frame:
+                                _traceback.print_stack(gr_frame, file=f)
+                            else:
+                                f.write("    (no frame — not currently suspended)\n")
+                            f.write("\n")
+                except Exception as exc:
+                    f.write(f"Error iterating greenlets: {exc}\n")
+                f.write(f"Total greenlets found: {greenlet_count}\n\n")
+
+                # 2) Hub state
+                try:
+                    hub = gevent.get_hub()
+                    f.write(f"=== HUB STATE ===\n")
+                    f.write(f"Hub: {hub!r}\n")
+                    gr_frame = getattr(hub, 'gr_frame', None)
+                    if gr_frame:
+                        f.write("Hub stack:\n")
+                        _traceback.print_stack(gr_frame, file=f)
+                    f.write("\n")
+                except Exception as exc:
+                    f.write(f"Error getting hub: {exc}\n\n")
+
+                # 3) All thread stacks (shows where the main thread is stuck)
+                f.write("=== ALL THREAD STACKS ===\n")
+                for tid, frame in _sys._current_frames().items():
+                    f.write(f"\n--- Thread {tid} ---\n")
+                    _traceback.print_stack(frame, file=f)
+
+                f.flush()
+
+            # Don't spam — wait before checking again
+            _real_time_sleep(60)
+
 
 # Discovery state management
 discovery_lock = threading.Lock()
@@ -642,9 +724,11 @@ def start_auto_discovery():
 def _hub_heartbeat():
     """Background greenlet that logs a heartbeat every 2 seconds.
     When this stops appearing in the log, the gevent hub has frozen."""
+    global _hub_alive_ts
     beat = 0
     while True:
         beat += 1
+        _hub_alive_ts = _pre_patch_time.time()  # Tell watchdog we're alive
         logger.info(f"[HEARTBEAT] #{beat}")
         gevent.sleep(2)
 
@@ -658,6 +742,11 @@ if __name__ == '__main__':
 
         # Start hub heartbeat monitor
         socketio.start_background_task(_hub_heartbeat)
+
+        # Start watchdog (real OS thread — immune to hub freezes)
+        _watchdog = _RealThread(target=_watchdog_thread_func, daemon=True)
+        _watchdog.start()
+        logger.info("Watchdog thread started (will dump stacks if hub freezes for >10s)")
 
         socketio.run(app, host='0.0.0.0', port=5001, debug=False, allow_unsafe_werkzeug=True)
         
