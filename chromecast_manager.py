@@ -5,17 +5,7 @@ from typing import List, Dict, Any, Optional
 import socket
 import json
 
-# _OrigPopen and _OrigDEVNULL are injected by app.py with the UNPATCHED
-# stdlib Popen class (saved before gevent monkey-patching).  For standalone
-# / non-gevent usage, fall back to the regular subprocess module.
-import subprocess as _subprocess
-
-# These will be overwritten by app.py with the real, unpatched versions.
-# Defaults here allow standalone usage without gevent.
-import os as _os_module
-_OrigPopen = _subprocess.Popen
-_OrigDEVNULL = _subprocess.DEVNULL
-_orig_waitpid = _os_module.waitpid
+import subprocess
 
 try:
     import gevent
@@ -29,36 +19,13 @@ except ImportError:
 from settings_manager import SettingsManager
 
 
-def _reap_pid(pid, block=False):
-    """Reap a child process using the UNPATCHED os.waitpid.
-
-    Returns the exit code, or None if the process hasn't exited yet
-    (only when block=False).  Uses _orig_waitpid which is the real
-    stdlib waitpid saved before gevent monkey-patches os.waitpid.
-    """
-    import os
-    flags = 0 if block else os.WNOHANG
-    try:
-        rpid, status = _orig_waitpid(pid, flags)
-    except ChildProcessError:
-        return 0  # Already reaped
-    if rpid == 0:
-        return None  # Still running (non-blocking only)
-    if os.WIFEXITED(status):
-        return os.WEXITSTATUS(status)
-    if os.WIFSIGNALED(status):
-        return -os.WTERMSIG(status)
-    return -1
-
-
 def _subprocess_in_thread(args, timeout, logger):
-    """Run a subprocess entirely in a real OS thread.
+    """Run a subprocess in a real OS thread (via gevent threadpool).
 
-    This function must NOT call any gevent APIs.  It uses the unpatched
-    Popen (_OrigPopen), unpatched os.waitpid (_orig_waitpid), and regular
-    time.sleep so that gevent's event loop is never involved in
-    child-process management (no SIGCHLD conflicts, no patched
-    os.waitpid deadlocks).
+    Since os and subprocess are NOT monkey-patched (app.py uses
+    monkey.patch_all(subprocess=False, os=False)), all stdlib subprocess
+    and os.waitpid calls work normally here.  We still run in a threadpool
+    thread so the blocking wait doesn't stall the gevent hub.
     """
     import os
     import tempfile
@@ -71,52 +38,38 @@ def _subprocess_in_thread(args, timeout, logger):
     proc = None
     start_time = time.time()
     try:
-        proc = _OrigPopen(args, stdout=tmp_file, stderr=_OrigDEVNULL)
+        proc = subprocess.Popen(args, stdout=tmp_file, stderr=subprocess.DEVNULL)
         tmp_file.close()
         tmp_file = None
-        pid = proc.pid
-        logger.info(f"[SUBPROCESS] PID {pid} launched for: {cmd_label}")
+        logger.info(f"[SUBPROCESS] PID {proc.pid} launched for: {cmd_label}")
 
         deadline = start_time + timeout
-        rc = None
-        while rc is None:
-            # Use unpatched waitpid — gevent's patched version deadlocks
-            # in threadpool threads when multiple children run concurrently.
-            rc = _reap_pid(pid, block=False)
-            if rc is not None:
-                break
+        while proc.poll() is None:
             if time.time() > deadline:
-                logger.warning(f"[SUBPROCESS] PID {pid} timed out after {timeout}s, killing")
-                os.kill(pid, 9)
-                _reap_pid(pid, block=True)
-                proc.returncode = -9  # Prevent __del__ from calling patched waitpid
+                logger.warning(f"[SUBPROCESS] PID {proc.pid} timed out after {timeout}s, killing")
+                proc.kill()
+                proc.wait()
                 return None, "subprocess timed out"
-            time.sleep(0.5)  # Real sleep, NOT gevent.sleep
+            time.sleep(0.5)
 
-        proc.returncode = rc  # Prevent __del__ from calling patched waitpid
         elapsed = time.time() - start_time
-        logger.info(f"[SUBPROCESS] PID {pid} exited rc={rc} in {elapsed:.1f}s")
+        logger.info(f"[SUBPROCESS] PID {proc.pid} exited rc={proc.returncode} in {elapsed:.1f}s")
 
         with open(tmp_path, 'r') as f:
             output = f.read().strip()
 
-        if rc == 0 and output:
+        if proc.returncode == 0 and output:
             return json.loads(output), None
         else:
-            return None, f"subprocess failed (rc={rc})"
+            return None, f"subprocess failed (rc={proc.returncode})"
     except BaseException as e:
-        if proc:
+        if proc and proc.poll() is None:
             logger.warning(f"[SUBPROCESS] Killing PID {proc.pid} due to {type(e).__name__}")
             try:
-                os.kill(proc.pid, 9)
-            except ProcessLookupError:
-                pass
-            try:
-                _reap_pid(proc.pid, block=True)
-                proc.returncode = -9
+                proc.kill()
+                proc.wait()
             except Exception:
                 pass
-        # Re-raise GreenletExit so gevent can clean up the greenlet
         if isinstance(e, Exception):
             return None, str(e)
         raise
@@ -139,12 +92,11 @@ class ChromecastManager:
         self._discovery_thread = None
 
     def _run_subprocess(self, args, timeout=15):
-        """Run a subprocess in a real OS thread to avoid gevent hub deadlocks.
+        """Run a subprocess in a real OS thread to avoid blocking the gevent hub.
 
-        gevent's SIGCHLD handler and patched os.waitpid deadlock the hub when
-        multiple child processes run concurrently.  By offloading to a real
-        thread via gevent's threadpool, subprocess operations are completely
-        outside the event loop.
+        Offloads to gevent's threadpool so the blocking subprocess.Popen.wait()
+        call doesn't stall greenlets.  os and subprocess are NOT monkey-patched,
+        so all stdlib calls work normally in the thread.
         """
         if GEVENT_AVAILABLE:
             return gevent.get_hub().threadpool.apply(

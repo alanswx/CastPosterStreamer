@@ -1,21 +1,12 @@
-# CRITICAL: Save unpatched subprocess pieces BEFORE gevent monkey patching.
-# gevent nullifies subprocess._posixsubprocess and replaces Popen, so we
-# must save both the original Popen class and the C module it depends on.
-# We also save os.waitpid because Popen.poll()/wait() call it internally,
-# and gevent's patched waitpid deadlocks in threadpool threads.
-import _posixsubprocess as _orig_posixsubprocess
-from subprocess import Popen as _OrigPopen, DEVNULL as _OrigDEVNULL
-import os as _os_module
-_orig_waitpid = _os_module.waitpid
-
-# CRITICAL: gevent monkey patching must be done FIRST, before any other imports
+# CRITICAL: gevent monkey patching must be done FIRST, before any other imports.
+# We skip patching os and subprocess because:
+#   - Patched os.waitpid deadlocks in threadpool threads with concurrent children
+#   - Patched subprocess.Popen requires gevent child watchers (default loop only)
+#   - Patched subprocess nullifies _posixsubprocess, breaking stdlib Popen
+# Flask-SocketIO only needs socket/threading/time/select patches to work.
 import gevent
 from gevent import monkey
-monkey.patch_all()
-
-# Restore _posixsubprocess so the original Popen class works in threadpool threads.
-import subprocess as _subprocess_module
-_subprocess_module._posixsubprocess = _orig_posixsubprocess
+monkey.patch_all(subprocess=False, os=False)
 
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit, join_room
@@ -30,12 +21,6 @@ from settings_manager import SettingsManager
 from chromecast_manager import ChromecastManager
 from slideshow_controller import SlideshowController
 
-# Inject unpatched Popen/DEVNULL into chromecast_manager so threadpool
-# threads can create subprocesses without gevent child watcher issues.
-import chromecast_manager as _cm_module
-_cm_module._OrigPopen = _OrigPopen
-_cm_module._OrigDEVNULL = _OrigDEVNULL
-_cm_module._orig_waitpid = _orig_waitpid
 
 # The 'DATA_FILES' setting in setup.py now correctly copies the 'templates'
 # and 'static' folders, so we can revert to the standard Flask configuration.
