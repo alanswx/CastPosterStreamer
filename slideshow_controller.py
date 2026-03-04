@@ -545,7 +545,8 @@ class SlideshowController:
 
                     current_time = time.time()
                     elapsed_time = (current_time - item_start_time) + item_accumulated_time
-                    self.logger.debug(f"Inner loop iteration: elapsed_time={elapsed_time:.2f}s")
+                    since_last_send = current_time - last_image_time
+                    self.logger.info(f"[TICK] elapsed={elapsed_time:.1f}s  since_last_send={since_last_send:.1f}s")
 
                     if elapsed_time >= duration_minutes * 60 or self.skip_requested:
                         if self.skip_requested:
@@ -556,15 +557,25 @@ class SlideshowController:
                         break
 
                     interval = self.settings_manager.get_slideshow_interval()
-                    if self.settings_manager.is_rotation_enabled() and (current_time - last_image_time) >= interval:
+                    rotation_on = self.settings_manager.is_rotation_enabled()
+                    if rotation_on and since_last_send >= interval:
+                        self.logger.info(f"[TICK] Rotation triggered (interval={interval}s)")
+                        self.logger.info(f"[TICK] Getting enabled devices...")
                         enabled_devices = self.chromecast_manager.get_enabled_devices()
+                        self.logger.info(f"[TICK] Got {len(enabled_devices)} enabled devices")
                         if enabled_devices:
+                            self.logger.info(f"[TICK] Getting images from {directory}...")
                             images = self.get_images_in_directory(directory)
+                            self.logger.info(f"[TICK] Got {len(images)} images")
                             if images:
+                                self.logger.info(f"[TICK] Calling _distribute_images_to_devices...")
                                 self._distribute_images_to_devices(images, enabled_devices)
+                                self.logger.info(f"[TICK] _distribute_images_to_devices returned")
                                 last_image_time = current_time
 
+                    self.logger.info(f"[TICK] Sleeping 1s...")
                     self._sleep(1)
+                    self.logger.info(f"[TICK] Woke up from sleep")
                     
                     if int(elapsed_time) % 2 == 0:
                         status = self.get_playlist_status()

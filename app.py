@@ -40,14 +40,33 @@ slideshow_controller.init_app(socketio, app)
 
 # Configure logging — write to both stderr and a persistent file so we can
 # diagnose freezes by inspecting the log after the app crashes.
+# Use a custom handler that flushes after every record so nothing is lost
+# if the process crashes (segfault).
 logging.basicConfig(level=logging.INFO)
-_file_handler = logging.FileHandler('/tmp/posters_debug.log', mode='w')
+
+
+class _FlushingFileHandler(logging.FileHandler):
+    """FileHandler that flushes after every log record (crash-safe)."""
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
+
+_file_handler = _FlushingFileHandler('/tmp/posters_debug.log', mode='w')
 _file_handler.setLevel(logging.DEBUG)
 _file_handler.setFormatter(logging.Formatter(
     '%(asctime)s.%(msecs)03d - %(name)s - %(levelname)s - %(message)s',
     datefmt='%H:%M:%S'))
 logging.getLogger().addHandler(_file_handler)
 logger = logging.getLogger(__name__)
+
+# Install crash signal handlers so we can detect segfaults/bus errors.
+import signal as _signal
+import faulthandler as _faulthandler
+_crash_file = open('/tmp/posters_crash.log', 'w')
+_faulthandler.enable(file=_crash_file, all_threads=True)
+# Also dump tracebacks on SIGUSR1 for debugging live freezes
+_faulthandler.register(_signal.SIGUSR1, file=_crash_file, all_threads=True)
 
 # Discovery state management
 discovery_lock = threading.Lock()
