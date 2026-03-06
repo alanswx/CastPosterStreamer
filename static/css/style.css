@@ -104,7 +104,7 @@ header h1 {
 
 .btn-sm { padding: 0.2rem 0.6rem; font-size: 0.8rem; }
 
-.directory-shortcuts {
+.directory-action-row {
     display: flex;
     gap: 0.5rem;
     margin-bottom: 0.5rem;
@@ -358,6 +358,147 @@ header h1 {
 }
 
 /* Playlist Management */
+.playlist-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+    border-bottom: 2px solid #3498db;
+    padding-bottom: 0.5rem;
+}
+
+.playlist-header h2 {
+    margin: 0;
+    border-bottom: none;
+    padding-bottom: 0;
+    font-size: 1.2rem;
+}
+
+.playlist-actions {
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+.dirty-indicator {
+    color: #e74c3c;
+    font-weight: bold;
+}
+
+.load-playlist-wrapper {
+    position: relative;
+}
+
+.playlist-dropdown {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 4px);
+    background: white;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    min-width: 220px;
+    z-index: 1000;
+    overflow: hidden;
+}
+
+.playlist-dropdown-empty {
+    padding: 0.75rem 1rem;
+    color: #7f8c8d;
+    font-size: 0.85rem;
+}
+
+.playlist-dropdown-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid #f0f0f0;
+    gap: 0.5rem;
+}
+
+.playlist-dropdown-item:last-child {
+    border-bottom: none;
+}
+
+.playlist-dropdown-item-name {
+    flex: 1;
+    cursor: pointer;
+    font-size: 0.9rem;
+    padding: 0.2rem 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.playlist-dropdown-item-name:hover {
+    color: #3498db;
+}
+
+.playlist-dropdown-item-delete {
+    background: none;
+    border: none;
+    color: #bbb;
+    cursor: pointer;
+    font-size: 1rem;
+    line-height: 1;
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+    flex-shrink: 0;
+}
+
+.playlist-dropdown-item-delete:hover {
+    color: #e74c3c;
+    background: #fef0f0;
+}
+
+/* Save Playlist Modal */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.4);
+    z-index: 2000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.modal-box {
+    background: white;
+    border-radius: 8px;
+    padding: 1.5rem;
+    width: 320px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+}
+
+.modal-box h3 {
+    margin: 0 0 1rem;
+    font-size: 1.1rem;
+    color: #2c3e50;
+}
+
+.modal-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 0.95rem;
+    margin-bottom: 1rem;
+}
+
+.modal-input:focus {
+    outline: none;
+    border-color: #3498db;
+}
+
+.modal-actions {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: flex-end;
+}
+
 .playlist-info {
     display: flex;
     justify-content: space-between;
@@ -586,7 +727,7 @@ header h1 {
 
 /* Controls */
 .controls {
-    margin-bottom: 1rem;
+    margin-bottom: 0;
 }
 
 .control-group {
@@ -624,6 +765,38 @@ header h1 {
     display: flex;
     gap: 0.5rem;
     flex-wrap: wrap;
+}
+
+.slideshow-main-buttons {
+    margin-bottom: 0.75rem;
+    flex-wrap: nowrap;
+}
+
+.slideshow-main-buttons .btn {
+    flex: 1;
+    white-space: nowrap;
+    padding-left: 0.4rem;
+    padding-right: 0.4rem;
+}
+
+.interval-group {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.interval-group label {
+    margin: 0;
+    font-weight: normal;
+    font-size: 0.9rem;
+    color: #555;
+}
+
+.interval-group input[type="number"] {
+    width: 70px;
+    padding: 0.3rem 0.5rem;
+    font-size: 0.9rem;
 }
 
 /* Slideshow Status */
@@ -748,10 +921,19 @@ header h1 {
         flex-direction: column;
         align-items: stretch;
     }
-    
+
+    .slideshow-main-buttons {
+        flex-direction: row;
+        align-items: stretch;
+    }
+
     .control-buttons .btn {
         margin-right: 0;
         margin-bottom: 0.5rem;
+    }
+
+    .slideshow-main-buttons .btn {
+        margin-bottom: 0;
     }
     
     .image-info {
@@ -813,10 +995,4 @@ header h1 {
 .btn-sm {
     padding: 0.2rem 0.6rem;
     font-size: 0.8rem;
-}
-
-.directory-shortcuts {
-    display: flex;
-    gap: 0.5rem;
-    margin-bottom: 0.5rem;
 }
