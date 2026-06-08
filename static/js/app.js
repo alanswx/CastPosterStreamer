@@ -11,6 +11,7 @@ class ChromecastSlideshowController {
         this.isConnected = false;
         this.playlistItems = [];
         this.draggedElement = null;
+        this._suppressDirty = false;
 
         this.initializeElements();
         this.setupEventListeners();
@@ -54,10 +55,22 @@ class ChromecastSlideshowController {
         this.autoScrollEl = document.getElementById('auto-scroll');
 
         // Playlist elements
-        this.playlistCountEl = document.getElementById('playlist-count');
-        this.playlistDurationEl = document.getElementById('playlist-duration');
         this.playlistListEl = document.getElementById('playlist-list');
-        this.clearPlaylistBtn = document.getElementById('clear-playlist');
+        this.playlistNameEl = document.getElementById('playlist-name');
+        this.playlistDirtyEl = document.getElementById('playlist-dirty');
+        this.createPlaylistBtn = document.getElementById('create-playlist');
+        this.savePlaylistBtn = document.getElementById('save-playlist');
+        this.loadPlaylistBtn = document.getElementById('load-playlist');
+        this.loadPlaylistDropdown = document.getElementById('load-playlist-dropdown');
+        this.savePlaylistModal = document.getElementById('save-playlist-modal');
+        this.savePlaylistNameInput = document.getElementById('save-playlist-name-input');
+        this.savePlaylistConfirmBtn = document.getElementById('save-playlist-confirm');
+        this.savePlaylistCancelBtn = document.getElementById('save-playlist-cancel');
+
+        // Saved playlist state
+        this.currentSavedPlaylistId = null;
+        this.currentSavedPlaylistName = 'New Playlist';
+        this.isDirty = false;
     }
 
     setupEventListeners() {
@@ -82,7 +95,14 @@ class ChromecastSlideshowController {
         document.getElementById('test-websocket').addEventListener('click', () => this.testWebSocket());
 
         // Playlist events
-        this.clearPlaylistBtn.addEventListener('click', () => this.clearPlaylist());
+        this.createPlaylistBtn.addEventListener('click', () => this.createPlaylist());
+        this.savePlaylistBtn.addEventListener('click', () => this.savePlaylist());
+        this.loadPlaylistBtn.addEventListener('click', (e) => { e.stopPropagation(); this.toggleLoadDropdown(); });
+        this.savePlaylistConfirmBtn.addEventListener('click', () => this.confirmSavePlaylist());
+        this.savePlaylistCancelBtn.addEventListener('click', () => this.hideSaveModal());
+        this.savePlaylistNameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') this.confirmSavePlaylist(); if (e.key === 'Escape') this.hideSaveModal(); });
+        // Close dropdown when clicking outside
+        document.addEventListener('click', () => this.hideLoadDropdown());
 
         // Reconnect when tab becomes visible again (browser throttles WebSocket heartbeat in background)
         document.addEventListener('visibilitychange', () => {
@@ -147,6 +167,7 @@ class ChromecastSlideshowController {
         });
 
         this.socket.on('playlist_updated', () => {
+            if (!this._suppressDirty) this.markDirty();
             this.loadPlaylist();
             // Scroll to the last item after a short delay to ensure it's rendered
             setTimeout(() => {
@@ -201,7 +222,8 @@ class ChromecastSlideshowController {
 
     async loadInitialData() {
         await this.loadSettings();
-        await this.browseDirectory();
+        // Don't auto-browse on load — user navigates explicitly via shortcuts
+        this.directoryListEl.innerHTML = '';
         await this.loadDevices();
         await this.loadPlaylist();
         // Removed loadSlideshowStatus() - using playlist system exclusively
@@ -251,10 +273,7 @@ class ChromecastSlideshowController {
             this.currentPathEl.textContent = data.current_path;
             this.updateDirectoryList(data.items || []);
 
-            // Update button text based on directory
             this.addDirectoryToPlaylistBtn.disabled = false;
-            const dirName = data.current_path.split('/').pop() || data.current_path;
-            this.addDirectoryToPlaylistBtn.textContent = `Add "${dirName}" to Playlist`;
 
             // Load directory thumbnails
             this.loadDirectoryThumbnails(data.current_path);
@@ -719,14 +738,8 @@ class ChromecastSlideshowController {
     }
 
     updatePlaylistDisplay() {
-        const totalDuration = this.playlistItems.reduce((sum, item) =>
-            item.is_valid ? sum + item.duration_minutes : sum, 0);
-
-        this.playlistCountEl.textContent = this.playlistItems.length;
-        this.playlistDurationEl.textContent = totalDuration;
-
         if (this.playlistItems.length === 0) {
-            this.playlistListEl.innerHTML = '<div class="no-playlist-items">No items in playlist. Add directories below.</div>';
+            this.playlistListEl.innerHTML = '<div class="no-playlist-items">No items in playlist. Browse to a directory above and click "Add This Directory to Playlist".</div>';
         } else {
             this.playlistListEl.innerHTML = '';
             this.playlistItems.forEach((item, index) => this.createPlaylistItemElement(item, index));
@@ -842,21 +855,177 @@ class ChromecastSlideshowController {
         }
     }
 
-    async clearPlaylist() {
-        if (!confirm('Are you sure you want to clear the entire playlist?')) {
-            return;
-        }
+    // --- Saved Playlist State ---
+    markDirty() {
+        this.isDirty = true;
+        this.playlistDirtyEl.style.display = '';
+    }
 
+    markClean(name, id) {
+        this.isDirty = false;
+        this.currentSavedPlaylistId = id;
+        this.currentSavedPlaylistName = name;
+        this.playlistNameEl.textContent = name;
+        this.playlistDirtyEl.style.display = 'none';
+    }
+
+    // --- Create (New) ---
+    async createPlaylist() {
+        this._suppressDirty = true;
         try {
             const response = await fetch('/api/playlist/clear', { method: 'DELETE' });
             if (response.ok) {
-                this.logMessage('Playlist cleared', 'success');
+                this.markClean('New Playlist', null);
+                this.logMessage('New playlist created', 'success');
+                setTimeout(() => { this._suppressDirty = false; }, 300);
             } else {
-                const error = await response.json();
-                this.logMessage(`Error clearing playlist: ${error.error}`, 'error');
+                this._suppressDirty = false;
             }
         } catch (error) {
-            this.logMessage(`Error clearing playlist: ${error.message}`, 'error');
+            this.logMessage(`Error creating playlist: ${error.message}`, 'error');
+            this._suppressDirty = false;
+        }
+    }
+
+    // --- Save ---
+    async savePlaylist() {
+        if (this.playlistItems.length === 0) return;
+        const prefill = this.currentSavedPlaylistName === 'New Playlist' ? '' : this.currentSavedPlaylistName;
+        this.showSaveModal(prefill);
+    }
+
+    showSaveModal(prefill = '') {
+        this.savePlaylistNameInput.value = prefill;
+        this.savePlaylistModal.style.display = 'flex';
+        this.savePlaylistNameInput.focus();
+        this.savePlaylistNameInput.select();
+    }
+
+    hideSaveModal() {
+        this.savePlaylistModal.style.display = 'none';
+    }
+
+    async confirmSavePlaylist() {
+        const name = this.savePlaylistNameInput.value.trim();
+        if (!name) { this.savePlaylistNameInput.focus(); return; }
+        this.hideSaveModal();
+        await this._doSave(name, this.currentSavedPlaylistId);
+    }
+
+    async _doSave(name, id) {
+        try {
+            let response;
+            if (id !== null) {
+                response = await fetch(`/api/saved-playlists/${id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name })
+                });
+            } else {
+                response = await fetch('/api/saved-playlists', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name })
+                });
+            }
+            if (response.ok) {
+                const data = await response.json();
+                this.markClean(data.name, data.id);
+                this.logMessage(`Playlist saved: "${data.name}"`, 'success');
+            } else {
+                const err = await response.json();
+                this.logMessage(`Error saving playlist: ${err.error}`, 'error');
+            }
+        } catch (error) {
+            this.logMessage(`Error saving playlist: ${error.message}`, 'error');
+        }
+    }
+
+    // --- Load Dropdown ---
+    async toggleLoadDropdown() {
+        if (this.loadPlaylistDropdown.style.display !== 'none') {
+            this.hideLoadDropdown();
+            return;
+        }
+        await this.showLoadDropdown();
+    }
+
+    hideLoadDropdown() {
+        this.loadPlaylistDropdown.style.display = 'none';
+    }
+
+    async showLoadDropdown() {
+        try {
+            const response = await fetch('/api/saved-playlists');
+            const playlists = await response.json();
+            this.loadPlaylistDropdown.innerHTML = '';
+            if (playlists.length === 0) {
+                this.loadPlaylistDropdown.innerHTML = '<div class="playlist-dropdown-empty">No saved playlists</div>';
+            } else {
+                playlists.forEach(pl => {
+                    const item = document.createElement('div');
+                    item.className = 'playlist-dropdown-item';
+                    item.innerHTML = `
+                        <span class="playlist-dropdown-item-name" title="${pl.name}">${pl.name}</span>
+                        <button class="playlist-dropdown-item-delete" title="Delete">✕</button>
+                    `;
+                    item.querySelector('.playlist-dropdown-item-name').addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        this.loadSavedPlaylist(pl.id, pl.name);
+                    });
+                    item.querySelector('.playlist-dropdown-item-delete').addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        this.deleteSavedPlaylist(pl.id, pl.name, item);
+                    });
+                    this.loadPlaylistDropdown.appendChild(item);
+                });
+            }
+            this.loadPlaylistDropdown.style.display = 'block';
+        } catch (error) {
+            this.logMessage(`Error loading playlists: ${error.message}`, 'error');
+        }
+    }
+
+    async loadSavedPlaylist(id, name) {
+        this.hideLoadDropdown();
+        // Stop any running slideshow before swapping the playlist
+        try { await fetch('/api/playlist/stop', { method: 'POST' }); } catch (_) {}
+        this._suppressDirty = true;
+        try {
+            const response = await fetch(`/api/saved-playlists/${id}/load`, { method: 'POST' });
+            if (response.ok) {
+                const data = await response.json();
+                this.markClean(data.name, data.id);
+                this.logMessage(`Loaded playlist: "${data.name}"`, 'success');
+                setTimeout(() => { this._suppressDirty = false; }, 300);
+            } else {
+                const err = await response.json();
+                this.logMessage(`Error loading playlist: ${err.error}`, 'error');
+                this._suppressDirty = false;
+            }
+        } catch (error) {
+            this.logMessage(`Error loading playlist: ${error.message}`, 'error');
+            this._suppressDirty = false;
+        }
+    }
+
+    async deleteSavedPlaylist(id, name, itemEl) {
+        try {
+            const response = await fetch(`/api/saved-playlists/${id}`, { method: 'DELETE' });
+            if (response.ok) {
+                itemEl.remove();
+                if (this.loadPlaylistDropdown.children.length === 0) {
+                    this.loadPlaylistDropdown.innerHTML = '<div class="playlist-dropdown-empty">No saved playlists</div>';
+                }
+                // If we deleted the currently loaded one, reset name
+                if (this.currentSavedPlaylistId === id) {
+                    this.markDirty();
+                    this.currentSavedPlaylistId = null;
+                }
+                this.logMessage(`Deleted playlist: "${name}"`, 'success');
+            }
+        } catch (error) {
+            this.logMessage(`Error deleting playlist: ${error.message}`, 'error');
         }
     }
 
@@ -957,11 +1126,8 @@ class ChromecastSlideshowController {
 
 
     updatePlaylistButtonStates() {
-        const hasValidItems = this.playlistItems.some(item => item.is_valid);
-        const hasEnabledDevices = this.devices.some(d => d.enabled);
-
         this.startPlaylistBtn.disabled = false; // Force-enable for testing
-        this.clearPlaylistBtn.disabled = this.playlistItems.length === 0;
+        this.savePlaylistBtn.disabled = this.playlistItems.length === 0;
     }
 
     highlightCurrentPlaylistItem(status) {

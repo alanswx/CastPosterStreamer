@@ -69,6 +69,17 @@ class SettingsManager:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+
+            # Saved playlists table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS saved_playlists (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    items TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             
             conn.commit()
             
@@ -393,3 +404,58 @@ class SettingsManager:
             cursor.execute("SELECT SUM(duration_minutes) FROM playlist_items WHERE is_valid = 1")
             result = cursor.fetchone()[0]
             return result or 0
+
+    # Saved playlist methods
+    def list_saved_playlists(self) -> List[Dict[str, Any]]:
+        """List all saved playlists (id, name, updated_at) without full items."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, name, updated_at FROM saved_playlists ORDER BY updated_at DESC
+            """)
+            columns = ['id', 'name', 'updated_at']
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def save_playlist(self, name: str, items: List[Dict[str, Any]], playlist_id: int = None) -> int:
+        """Create or update a saved playlist. Returns the playlist id."""
+        items_json = json.dumps(items)
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            if playlist_id is not None:
+                cursor.execute("""
+                    UPDATE saved_playlists SET name = ?, items = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (name, items_json, playlist_id))
+                conn.commit()
+                return playlist_id
+            else:
+                cursor.execute("""
+                    INSERT OR REPLACE INTO saved_playlists (name, items, updated_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                """, (name, items_json))
+                conn.commit()
+                return cursor.lastrowid
+
+    def get_saved_playlist(self, playlist_id: int) -> Optional[Dict[str, Any]]:
+        """Get a saved playlist by id, including its items."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, name, items, updated_at FROM saved_playlists WHERE id = ?
+            """, (playlist_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return {
+                'id': row[0],
+                'name': row[1],
+                'items': json.loads(row[2]),
+                'updated_at': row[3],
+            }
+
+    def delete_saved_playlist(self, playlist_id: int):
+        """Delete a saved playlist."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM saved_playlists WHERE id = ?", (playlist_id,))
+            conn.commit()

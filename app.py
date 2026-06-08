@@ -606,6 +606,85 @@ def get_playlist_status():
     return jsonify(status)
 
 
+# Saved Playlists API
+@app.route('/api/saved-playlists', methods=['GET'])
+def list_saved_playlists():
+    """List all saved playlists."""
+    return jsonify(settings_manager.list_saved_playlists())
+
+
+@app.route('/api/saved-playlists', methods=['POST'])
+def create_saved_playlist():
+    """Save the current active playlist under a name."""
+    data = request.get_json()
+    name = (data.get('name') or '').strip()
+    if not name:
+        return jsonify({'error': 'Name is required'}), 400
+    try:
+        items = settings_manager.get_playlist_items()
+        save_items = [
+            {k: v for k, v in item.items() if k in ('directory_path', 'directory_name', 'duration_minutes', 'order_index')}
+            for item in items
+        ]
+        playlist_id = settings_manager.save_playlist(name, save_items)
+        return jsonify({'id': playlist_id, 'name': name})
+    except Exception as e:
+        logger.error(f"Error saving playlist: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/saved-playlists/<int:playlist_id>', methods=['PUT'])
+def update_saved_playlist(playlist_id):
+    """Overwrite a saved playlist with current active playlist (optionally rename)."""
+    data = request.get_json()
+    name = (data.get('name') or '').strip()
+    if not name:
+        return jsonify({'error': 'Name is required'}), 400
+    try:
+        items = settings_manager.get_playlist_items()
+        save_items = [
+            {k: v for k, v in item.items() if k in ('directory_path', 'directory_name', 'duration_minutes', 'order_index')}
+            for item in items
+        ]
+        settings_manager.save_playlist(name, save_items, playlist_id=playlist_id)
+        return jsonify({'id': playlist_id, 'name': name})
+    except Exception as e:
+        logger.error(f"Error updating saved playlist: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/saved-playlists/<int:playlist_id>', methods=['DELETE'])
+def delete_saved_playlist(playlist_id):
+    """Delete a saved playlist."""
+    try:
+        settings_manager.delete_saved_playlist(playlist_id)
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logger.error(f"Error deleting saved playlist: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/saved-playlists/<int:playlist_id>/load', methods=['POST'])
+def load_saved_playlist(playlist_id):
+    """Replace the active playlist with a saved playlist."""
+    try:
+        saved = settings_manager.get_saved_playlist(playlist_id)
+        if not saved:
+            return jsonify({'error': 'Playlist not found'}), 404
+        settings_manager.clear_playlist()
+        for item in saved['items']:
+            settings_manager.add_playlist_item(
+                item['directory_path'],
+                item['directory_name'],
+                item.get('duration_minutes', 10)
+            )
+        socketio.emit('playlist_updated')
+        return jsonify({'id': saved['id'], 'name': saved['name']})
+    except Exception as e:
+        logger.error(f"Error loading saved playlist: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @socketio.on('connect')
 def handle_connect():
     """Handle client connection."""
