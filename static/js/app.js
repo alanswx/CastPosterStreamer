@@ -71,6 +71,17 @@ class ChromecastSlideshowController {
         this.currentSavedPlaylistId = null;
         this.currentSavedPlaylistName = 'New Playlist';
         this.isDirty = false;
+
+        // Screen schedule
+        this.scheduleEnabledEl = document.getElementById('schedule-enabled');
+        this.scheduleOnTimeEl = document.getElementById('schedule-on-time');
+        this.scheduleOffTimeEl = document.getElementById('schedule-off-time');
+        this.scheduleRunOnBtn = document.getElementById('schedule-run-on');
+        this.scheduleRunOffBtn = document.getElementById('schedule-run-off');
+        this.scheduleCheckBtn = document.getElementById('schedule-check-screens');
+        this.scheduleSummaryEl = document.getElementById('schedule-summary');
+        this.scheduleLastActionEl = document.getElementById('schedule-last-action');
+        this.scheduleScreensEl = document.getElementById('schedule-screens');
     }
 
     setupEventListeners() {
@@ -103,6 +114,14 @@ class ChromecastSlideshowController {
         this.savePlaylistNameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') this.confirmSavePlaylist(); if (e.key === 'Escape') this.hideSaveModal(); });
         // Close dropdown when clicking outside
         document.addEventListener('click', () => this.hideLoadDropdown());
+
+        // Screen schedule
+        this.scheduleEnabledEl.addEventListener('change', () => this.saveSchedule());
+        this.scheduleOnTimeEl.addEventListener('change', () => this.saveSchedule());
+        this.scheduleOffTimeEl.addEventListener('change', () => this.saveSchedule());
+        this.scheduleRunOnBtn.addEventListener('click', () => this.runScheduleNow('on'));
+        this.scheduleRunOffBtn.addEventListener('click', () => this.runScheduleNow('off'));
+        this.scheduleCheckBtn.addEventListener('click', () => this.checkScreens());
 
         // Reconnect when tab becomes visible again (browser throttles WebSocket heartbeat in background)
         document.addEventListener('visibilitychange', () => {
@@ -166,6 +185,10 @@ class ChromecastSlideshowController {
             this.updateDeviceInList(data.uuid, data.enabled);
         });
 
+        this.socket.on('schedule_status', (status) => {
+            this.renderSchedule(status);
+        });
+
         this.socket.on('playlist_updated', () => {
             if (!this._suppressDirty) this.markDirty();
             this.loadPlaylist();
@@ -226,6 +249,7 @@ class ChromecastSlideshowController {
         this.directoryListEl.innerHTML = '';
         await this.loadDevices();
         await this.loadPlaylist();
+        await this.loadSchedule();
         // Removed loadSlideshowStatus() - using playlist system exclusively
         // Removed loadPlaylistStatus() - rely on WebSocket updates for real-time status
         this.discoverDevices();
@@ -722,6 +746,106 @@ class ChromecastSlideshowController {
     clearLog() {
         this.logContainerEl.innerHTML = '';
         this.logMessage('Log cleared', 'info');
+    }
+
+    // Screen Schedule Methods
+    async loadSchedule() {
+        try {
+            const response = await fetch('/api/schedule');
+            this.renderSchedule(await response.json());
+        } catch (error) {
+            this.logMessage(`Error loading schedule: ${error.message}`, 'error');
+        }
+    }
+
+    async saveSchedule() {
+        const payload = {
+            enabled: this.scheduleEnabledEl.checked,
+            on_time: this.scheduleOnTimeEl.value,
+            off_time: this.scheduleOffTimeEl.value
+        };
+        try {
+            const response = await fetch('/api/schedule', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Failed to save schedule');
+            this.logMessage(
+                `Schedule saved: ${payload.enabled ? 'enabled' : 'disabled'}, on ${payload.on_time}, off ${payload.off_time}`,
+                'success'
+            );
+        } catch (error) {
+            this.logMessage(`Error saving schedule: ${error.message}`, 'error');
+            await this.loadSchedule();   // revert the inputs to what the server has
+        }
+    }
+
+    async runScheduleNow(state) {
+        const btn = state === 'on' ? this.scheduleRunOnBtn : this.scheduleRunOffBtn;
+        const label = btn.textContent;
+        this.scheduleRunOnBtn.disabled = this.scheduleRunOffBtn.disabled = true;
+        btn.textContent = state === 'on' ? 'Turning on…' : 'Turning off…';
+        this.logMessage(`Running "${state}" sequence now (first time on a screen may need you to press Allow on the TV)`, 'info');
+        try {
+            const response = await fetch(`/api/schedule/run/${state}`, { method: 'POST' });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error || `Failed to run ${state}`);
+            this.logMessage(this.describeScheduleResult(result), result.ok ? 'success' : 'error');
+        } catch (error) {
+            this.logMessage(`Error running ${state}: ${error.message}`, 'error');
+        } finally {
+            btn.textContent = label;
+            this.scheduleRunOnBtn.disabled = this.scheduleRunOffBtn.disabled = false;
+            await this.loadSchedule();
+        }
+    }
+
+    async checkScreens() {
+        this.scheduleScreensEl.textContent = 'Checking…';
+        try {
+            const response = await fetch('/api/schedule/power-states');
+            this.renderScreenStates(await response.json());
+        } catch (error) {
+            this.scheduleScreensEl.textContent = '—';
+            this.logMessage(`Error checking screens: ${error.message}`, 'error');
+        }
+    }
+
+    renderSchedule(status) {
+        if (!status) return;
+        this.scheduleEnabledEl.checked = !!status.enabled;
+        if (status.on_time) this.scheduleOnTimeEl.value = status.on_time;
+        if (status.off_time) this.scheduleOffTimeEl.value = status.off_time;
+
+        if (!status.enabled) {
+            this.scheduleSummaryEl.textContent = 'Disabled';
+        } else if (!status.desired_now) {
+            this.scheduleSummaryEl.textContent = 'Enabled, but on and off times are the same — nothing will happen';
+        } else {
+            const next = status.next_transition;
+            this.scheduleSummaryEl.textContent =
+                `Enabled — screens should be ${status.desired_now.toUpperCase()} now` +
+                (next ? ` (next: ${next.state} at ${next.at})` : '');
+        }
+
+        const last = status.last_action;
+        this.scheduleLastActionEl.textContent = last ? this.describeScheduleResult(last) : 'None yet';
+        if (last && last.screens) this.renderScreenStates(last.screens);
+    }
+
+    renderScreenStates(states) {
+        const parts = Object.entries(states || {}).map(([name, s]) => `${name}: ${s || 'unreachable'}`);
+        this.scheduleScreensEl.textContent = parts.length ? parts.join(' · ') : 'No enabled screens';
+    }
+
+    describeScheduleResult(r) {
+        const screens = Object.entries(r.screens || {}).map(([n, s]) => `${n} ${s || 'unreachable'}`).join(', ');
+        const errors = r.errors && Object.keys(r.errors).length
+            ? ' — errors: ' + Object.entries(r.errors).map(([n, e]) => `${n}: ${e}`).join('; ')
+            : '';
+        return `${r.action.toUpperCase()} (${r.reason}${r.at ? ', ' + r.at : ''}) ${r.ok ? '✓' : '✗'} — show: ${r.show}; ${screens}${errors}`;
     }
 
     // Playlist Management Methods
