@@ -13,6 +13,8 @@ DATA_FILES = [
     'image_server.py',
     'requirements.txt',
     'chromecast_subprocess.py',
+    'scheduler.py',
+    'tv_power.py',
     ('static', glob('static/**/*', recursive=True)),
     ('templates', glob('templates/**/*.*', recursive=True)),
 ]
@@ -49,7 +51,9 @@ OPTIONS = {
         'com.apple.security.network.client': True,
         'com.apple.security.network.server': True,
     },
-    'packages': ['rumps', 'flask', 'flask_socketio', 'flask_cors', 'PIL', 'catt', 'pychromecast', 'socketio', 'engineio', 'zeroconf', 'packaging', 'gevent', 'geventwebsocket'],
+    'packages': ['rumps', 'flask', 'flask_socketio', 'flask_cors', 'PIL', 'catt', 'pychromecast', 'socketio', 'engineio', 'zeroconf', 'packaging', 'gevent', 'geventwebsocket',
+                 # samsungtvws (screen power-off) and everything it imports
+                 'samsungtvws', 'websocket', 'requests', 'urllib3', 'certifi', 'charset_normalizer', 'idna', 'yarl', 'multidict', 'propcache'],
     'includes': ['subprocess', 'webbrowser', 'threading', 'pathlib', 'json', 'os', 'sys'],
     'excludes': ['tkinter'],
 }

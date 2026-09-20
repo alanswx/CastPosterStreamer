@@ -30,6 +30,7 @@ from pathlib import Path
 from settings_manager import SettingsManager
 from chromecast_manager import ChromecastManager
 from slideshow_controller import SlideshowController
+from scheduler import PowerScheduler
 
 
 # The 'DATA_FILES' setting in setup.py now correctly copies the 'templates'
@@ -47,6 +48,8 @@ chromecast_manager = ChromecastManager(settings_manager)
 # socketio = SocketIO(app, cors_allowed_origins="*")  <-- Removed duplicate initialization
 slideshow_controller = SlideshowController(settings_manager, chromecast_manager)
 slideshow_controller.init_app(socketio, app)
+power_scheduler = PowerScheduler(settings_manager, slideshow_controller, socketio,
+                                 discover_fn=lambda: run_discovery_sync())
 
 # Configure logging — ONLY use a file handler.  DO NOT log to stderr.
 # In a py2app macOS bundle, stderr is a pipe with a finite buffer (~64KB).
@@ -159,6 +162,49 @@ def _watchdog_thread_func():
 # Discovery state management
 discovery_lock = threading.Lock()
 discovery_running = False
+
+
+def run_discovery_sync(wait_if_busy: float = 20.0) -> bool:
+    """Run device discovery synchronously, honouring the same guard as the
+    socket handler.  Used by the scheduler: after a reboot nothing has
+    discovered the screens yet (auto-discovery at startup is disabled and the
+    frontend only triggers it when a browser opens the UI), so a scheduled
+    "on" would otherwise fail with "No enabled Chromecast devices found".
+
+    If a discovery is already in progress, wait for it to finish (up to
+    wait_if_busy seconds) rather than starting a second one.  Returns True if
+    a discovery ran or completed.
+    """
+    global discovery_running
+    with discovery_lock:
+        busy = discovery_running
+        if not busy:
+            discovery_running = True
+
+    if busy:
+        deadline = time.time() + wait_if_busy
+        while time.time() < deadline:
+            time.sleep(0.5)
+            with discovery_lock:
+                if not discovery_running:
+                    return True
+        logger.warning("Discovery already in progress and did not finish in time")
+        return False
+
+    try:
+        socketio.emit('discovery_started')
+        devices = chromecast_manager.discover_devices(timeout=5)
+        if devices:
+            socketio.emit('devices_discovered', devices)
+        logger.info(f"Scheduler-triggered discovery found {len(devices or [])} devices")
+        return True
+    except Exception as e:
+        logger.error(f"Scheduler-triggered discovery error: {e}")
+        return False
+    finally:
+        with discovery_lock:
+            discovery_running = False
+        socketio.emit('discovery_finished')
 
 
 @app.route('/')
@@ -685,6 +731,54 @@ def load_saved_playlist(playlist_id):
         return jsonify({'error': str(e)}), 500
 
 
+# Screen Schedule API
+@app.route('/api/schedule', methods=['GET'])
+def get_schedule():
+    """Schedule config plus what the scheduler thinks right now."""
+    return jsonify(power_scheduler.status())
+
+
+@app.route('/api/schedule', methods=['POST'])
+def save_schedule():
+    """Save schedule config. Re-evaluates immediately (see PowerScheduler.save_config)."""
+    data = request.get_json() or {}
+    try:
+        cfg = power_scheduler.save_config(
+            enabled=bool(data.get('enabled', False)),
+            on_time=str(data.get('on_time', '')),
+            off_time=str(data.get('off_time', '')),
+        )
+        socketio.emit('schedule_status', power_scheduler.status())
+        return jsonify(cfg)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"Error saving schedule: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/schedule/run/<state>', methods=['POST'])
+def run_schedule_now(state):
+    """Run the on/off sequence immediately — the UI's test buttons.
+
+    Deliberately synchronous: the caller gets the per-screen verification
+    result back. Can take a while the first time a TV needs to be paired.
+    """
+    try:
+        return jsonify(power_scheduler.run_now(state))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"Error running schedule action '{state}': {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/schedule/power-states', methods=['GET'])
+def get_power_states():
+    """Live PowerState of each enabled screen."""
+    return jsonify(power_scheduler.power_states())
+
+
 @socketio.on('connect')
 def handle_connect():
     """Handle client connection."""
@@ -832,6 +926,9 @@ if __name__ == '__main__':
         # to hub freezes because it bypasses monkey-patched threading entirely)
         _raw_start_new_thread(_watchdog_thread_func, ())
         logger.info("Watchdog thread started (will dump stacks if hub freezes for >10s)")
+
+        # Daily screen on/off schedule (no-op until enabled in the UI)
+        power_scheduler.start()
 
         socketio.run(app, host='0.0.0.0', port=5001, debug=False, allow_unsafe_werkzeug=True)
         

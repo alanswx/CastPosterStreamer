@@ -799,6 +799,40 @@ header h1 {
     font-size: 0.9rem;
 }
 
+/* Screen schedule */
+.schedule-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem 0.75rem;
+    margin-bottom: 0.5rem;
+}
+
+.schedule-row label {
+    margin: 0;
+    font-weight: normal;
+    font-size: 0.9rem;
+    color: #555;
+}
+
+.schedule-row .schedule-enable {
+    font-weight: 500;
+    color: #2c3e50;
+    margin-right: 0.5rem;
+}
+
+.schedule-row input[type="time"] {
+    padding: 0.3rem 0.5rem;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 0.9rem;
+}
+
+.schedule-row input[type="checkbox"] {
+    margin-right: 0.4rem;
+    transform: scale(1.2);
+}
+
 /* Slideshow Status */
 .slideshow-status {
     background: #f8f9fa;

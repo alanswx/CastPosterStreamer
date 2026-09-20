@@ -98,6 +98,45 @@
                 </div>
             </section>
 
+            <!-- Screen Schedule Section -->
+            <section class="panel">
+                <h2>Screen Schedule</h2>
+                <div class="controls">
+                    <div class="schedule-row">
+                        <label class="schedule-enable">
+                            <input type="checkbox" id="schedule-enabled"> Enabled
+                        </label>
+                        <label for="schedule-on-time">On at</label>
+                        <input type="time" id="schedule-on-time" value="08:00">
+                        <label for="schedule-off-time">Off at</label>
+                        <input type="time" id="schedule-off-time" value="19:00">
+                    </div>
+                    <p class="control-description">
+                        At the on time the screens wake and the current playlist starts; at the off time
+                        the show stops and the screens go to standby. Enabling applies the schedule immediately.
+                    </p>
+                    <div class="control-buttons">
+                        <button id="schedule-run-on" class="btn btn-success btn-sm">▶️ Run On Now</button>
+                        <button id="schedule-run-off" class="btn btn-danger btn-sm">⏻ Run Off Now</button>
+                        <button id="schedule-check-screens" class="btn btn-secondary btn-sm">Check Screens</button>
+                    </div>
+                </div>
+                <div class="slideshow-status">
+                    <div class="status-item">
+                        <span class="label">Schedule:</span>
+                        <span id="schedule-summary" class="value">Disabled</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="label">Last action:</span>
+                        <span id="schedule-last-action" class="value">None yet</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="label">Screens:</span>
+                        <span id="schedule-screens" class="value">—</span>
+                    </div>
+                </div>
+            </section>
+
             <!-- Device Selection Section -->
             <section class="panel">
                 <h2>Chromecast Devices</h2>

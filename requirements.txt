@@ -12,3 +12,12 @@ packaging
 Flask-Cors==4.0.1
 gevent
 gevent-websocket
+samsungtvws==3.0.5
+# py2app 0.28.6 needs an older setuptools to build, for two separate reasons:
+#   - setuptools 70+ dropped the pkg_resources.packaging shim that py2app's
+#     matplotlib recipe imports (ImportError at build time)
+#   - setuptools 71+ ships its vendored deps with real .dist-info dirs, which
+#     collide with the standalone importlib_metadata that Flask pulls in on
+#     Python 3.9 ("File exists: ...importlib_metadata-8.7.1.dist-info")
+# 69.5.1 is the newest version that avoids both.
+setuptools==69.5.1
