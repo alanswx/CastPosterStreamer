@@ -39,10 +39,14 @@ _HHMM = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 
 
 class PowerScheduler:
-    def __init__(self, settings_manager, slideshow_controller, socketio):
+    def __init__(self, settings_manager, slideshow_controller, socketio, discover_fn=None):
         self.settings_manager = settings_manager
         self.slideshow_controller = slideshow_controller
         self.socketio = socketio
+        # Runs Chromecast discovery synchronously; see app.run_discovery_sync.
+        # Needed because nothing discovers the screens at startup, so after a
+        # reboot the playlist can't start until something does.
+        self.discover_fn = discover_fn
         self.token_dir = settings_manager.app_support_dir / "tv_tokens"
 
         self._lock = threading.Lock()          # monkey-patched -> gevent-safe
@@ -198,6 +202,11 @@ class PowerScheduler:
         if sc.is_playlist_running or sc.is_slideshow_running:
             result["show"] = "already running"
         else:
+            if not sc.chromecast_manager.get_enabled_devices() and self.discover_fn:
+                logger.info("[schedule] no screens known yet, running discovery first")
+                result["discovery"] = "ran" if self.discover_fn() else "failed"
+                if not sc.chromecast_manager.get_enabled_devices():
+                    logger.error("[schedule] discovery found no enabled screens")
             res = sc.start_playlist()
             if res.get("success"):
                 result["show"] = "playlist started"

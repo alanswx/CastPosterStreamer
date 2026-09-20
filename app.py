@@ -48,7 +48,8 @@ chromecast_manager = ChromecastManager(settings_manager)
 # socketio = SocketIO(app, cors_allowed_origins="*")  <-- Removed duplicate initialization
 slideshow_controller = SlideshowController(settings_manager, chromecast_manager)
 slideshow_controller.init_app(socketio, app)
-power_scheduler = PowerScheduler(settings_manager, slideshow_controller, socketio)
+power_scheduler = PowerScheduler(settings_manager, slideshow_controller, socketio,
+                                 discover_fn=lambda: run_discovery_sync())
 
 # Configure logging — ONLY use a file handler.  DO NOT log to stderr.
 # In a py2app macOS bundle, stderr is a pipe with a finite buffer (~64KB).
@@ -161,6 +162,49 @@ def _watchdog_thread_func():
 # Discovery state management
 discovery_lock = threading.Lock()
 discovery_running = False
+
+
+def run_discovery_sync(wait_if_busy: float = 20.0) -> bool:
+    """Run device discovery synchronously, honouring the same guard as the
+    socket handler.  Used by the scheduler: after a reboot nothing has
+    discovered the screens yet (auto-discovery at startup is disabled and the
+    frontend only triggers it when a browser opens the UI), so a scheduled
+    "on" would otherwise fail with "No enabled Chromecast devices found".
+
+    If a discovery is already in progress, wait for it to finish (up to
+    wait_if_busy seconds) rather than starting a second one.  Returns True if
+    a discovery ran or completed.
+    """
+    global discovery_running
+    with discovery_lock:
+        busy = discovery_running
+        if not busy:
+            discovery_running = True
+
+    if busy:
+        deadline = time.time() + wait_if_busy
+        while time.time() < deadline:
+            time.sleep(0.5)
+            with discovery_lock:
+                if not discovery_running:
+                    return True
+        logger.warning("Discovery already in progress and did not finish in time")
+        return False
+
+    try:
+        socketio.emit('discovery_started')
+        devices = chromecast_manager.discover_devices(timeout=5)
+        if devices:
+            socketio.emit('devices_discovered', devices)
+        logger.info(f"Scheduler-triggered discovery found {len(devices or [])} devices")
+        return True
+    except Exception as e:
+        logger.error(f"Scheduler-triggered discovery error: {e}")
+        return False
+    finally:
+        with discovery_lock:
+            discovery_running = False
+        socketio.emit('discovery_finished')
 
 
 @app.route('/')

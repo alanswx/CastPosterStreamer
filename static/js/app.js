@@ -845,7 +845,8 @@ class ChromecastSlideshowController {
         const errors = r.errors && Object.keys(r.errors).length
             ? ' — errors: ' + Object.entries(r.errors).map(([n, e]) => `${n}: ${e}`).join('; ')
             : '';
-        return `${r.action.toUpperCase()} (${r.reason}${r.at ? ', ' + r.at : ''}) ${r.ok ? '✓' : '✗'} — show: ${r.show}; ${screens}${errors}`;
+        const discovery = r.discovery ? ` (discovery ${r.discovery})` : '';
+        return `${r.action.toUpperCase()} (${r.reason}${r.at ? ', ' + r.at : ''}) ${r.ok ? '✓' : '✗'} — show: ${r.show}${discovery}; ${screens}${errors}`;
     }
 
     // Playlist Management Methods
