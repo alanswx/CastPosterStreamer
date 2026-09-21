@@ -207,13 +207,25 @@ class PowerScheduler:
                 result["discovery"] = "ran" if self.discover_fn() else "failed"
                 if not sc.chromecast_manager.get_enabled_devices():
                     logger.error("[schedule] discovery found no enabled screens")
-            res = sc.start_playlist()
-            if res.get("success"):
-                result["show"] = "playlist started"
+
+            # Start whatever the user last loaded — a single show or the
+            # playlist — rather than always forcing the playlist.
+            kind = (self.settings_manager.get_setting("loaded_kind") or "playlist").lower()
+            if kind == "show":
+                path = self.settings_manager.get_selected_directory()
+                label = path.rstrip("/").split("/")[-1] or path
+                res = sc.play_single_show(path)
+                started, what = res.get("success"), f"show started: {label}"
+            else:
+                res = sc.play_current_playlist()
+                started, what = res.get("success"), "playlist started"
+
+            if started:
+                result["show"] = what
                 self.socketio.emit("playlist_started")
                 self.socketio.emit("playlist_status_update", sc.get_playlist_status())
             else:
-                result["show"] = f"could not start playlist: {res.get('error')}"
+                result["show"] = f"could not start ({kind}): {res.get('error')}"
                 logger.error(f"[schedule] {result['show']}")
                 # Still verify below — the screens may have been on already.
 

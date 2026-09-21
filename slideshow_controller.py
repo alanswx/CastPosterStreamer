@@ -687,6 +687,19 @@ class SlideshowController:
 
         return True
     
+    def play_current_playlist(self) -> Dict[str, Any]:
+        """Start the stored playlist, taking over from whatever is playing.
+
+        Like play_single_show, this is server-side so the caller doesn't have
+        to stop things first: a single show casting would otherwise make
+        start_playlist refuse, and the browser can't reliably know one is
+        running (its own flag resets on reload, and other tabs exist).
+        """
+        if self.is_playlist_running:
+            return {'success': True}
+        self.stop_slideshow()
+        return self.start_playlist()
+
     def play_single_show(self, directory: str) -> Dict[str, Any]:
         """Stop whatever is playing and play this one show, in one operation.
 

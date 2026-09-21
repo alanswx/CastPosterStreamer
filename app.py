@@ -601,9 +601,9 @@ def clear_playlist():
 
 @app.route('/api/playlist/start', methods=['POST'])
 def start_playlist():
-    """Start playlist mode slideshow."""
+    """Start playlist mode slideshow, taking over from a single show if one is playing."""
     try:
-        result = slideshow_controller.start_playlist()
+        result = slideshow_controller.play_current_playlist()
         logger.info(f"Start playlist result: {result}")
         
         # Always emit status update, even if already running (for frontend sync)

@@ -584,17 +584,9 @@ class ChromecastSlideshowController {
             return;
         }
 
-        // Playlist mode: clear a single show if one is casting.
-        if (this.showPlaying) {
-            await fetch('/api/slideshow/stop', { method: 'POST' });
-            this.showPlaying = false;
-        }
-
-        const status = await (await fetch('/api/playlist/status')).json();
-        if (status.running) {
-            this.logMessage('That playlist is already playing', 'info');
-            return;
-        }
+        // The server stops a running single show for us, so there's no
+        // client-side state to get wrong here.
+        this.showPlaying = false;
         await this.startPlaylistSlideshow();
     }
 

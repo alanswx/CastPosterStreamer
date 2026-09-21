@@ -75,6 +75,8 @@ header h1 {
     color: #2c3e50;
     border-bottom: 2px solid #3498db;
     padding-bottom: 0.5rem;
+    /* Matches .playlist-header h2 so every panel heading is the same size */
+    font-size: 1.2rem;
 }
 
 /* Buttons */
