@@ -23,7 +23,6 @@ class ChromecastSlideshowController {
         // Directory elements
         this.currentPathEl = document.getElementById('current-path');
         this.directoryListEl = document.getElementById('directory-list');
-        this.directoryThumbnailsEl = document.getElementById('directory-thumbnails');
 
         // Selected directory tracking (for backend compatibility)
         this.selectedDirectory = '';
@@ -47,7 +46,6 @@ class ChromecastSlideshowController {
         this.addShowBtn = document.getElementById('add-show');
         this.showPickerEl = document.getElementById('show-picker');
         this.pickerTitleEl = document.getElementById('picker-title');
-        this.pickerConfirmBtn = document.getElementById('picker-confirm');
         this.pickerCloseBtn = document.getElementById('picker-close');
         this.pickerMode = null;          // 'load' | 'add' while the picker is open
 
@@ -113,7 +111,6 @@ class ChromecastSlideshowController {
         // Picker / playlist events
         this.loadShowBtn.addEventListener('click', () => this.openPicker('load'));
         this.addShowBtn.addEventListener('click', () => this.openPicker('add'));
-        this.pickerConfirmBtn.addEventListener('click', () => this.confirmPicker());
         this.pickerCloseBtn.addEventListener('click', () => this.closePicker());
 
         // Log events
@@ -397,11 +394,6 @@ class ChromecastSlideshowController {
             this.currentPathEl.textContent = data.current_path;
             this.updateDirectoryList(data.items || []);
 
-            // You can only "use" a folder once you've navigated into one.
-            if (this.pickerConfirmBtn) this.pickerConfirmBtn.disabled = !this.currentPath;
-
-            // Load directory thumbnails
-            this.loadDirectoryThumbnails(data.current_path);
         } catch (error) {
             this.logMessage(`Error browsing directory: ${error.message}`, 'error');
         }
@@ -412,55 +404,14 @@ class ChromecastSlideshowController {
 
         items.forEach(item => {
             const div = document.createElement('div');
-            div.className = `directory-item ${item.name === '..' ? 'parent' : ''}`;
+            const isParent = item.name === '..';
+            div.className = `directory-item ${isParent ? 'parent' : ''}`;
             div.textContent = item.name;
-            div.addEventListener('click', () => this.browseDirectory(item.path));
+            div.addEventListener('click', () => isParent
+                ? this.browseDirectory(item.path)
+                : this.pickDirectory(item.path));
             this.directoryListEl.appendChild(div);
         });
-    }
-
-    async loadDirectoryThumbnails(directoryPath) {
-        try {
-            // Get images from this directory
-            const response = await fetch(`/api/directory-images?path=${encodeURIComponent(directoryPath)}`);
-
-            if (!response.ok) {
-                this.directoryThumbnailsEl.innerHTML = '<div class="no-preview">No images found in this directory</div>';
-                return;
-            }
-
-            const data = await response.json();
-
-            if (!data.images || data.images.length === 0) {
-                this.directoryThumbnailsEl.innerHTML = '<div class="no-preview">No images found in this directory</div>';
-                return;
-            }
-
-            // Show first few images as thumbnails
-            this.directoryThumbnailsEl.innerHTML = '';
-            const maxThumbnails = Math.min(8, data.images.length);
-
-            for (let i = 0; i < maxThumbnails; i++) {
-                const imageData = data.images[i];
-                const img = document.createElement('img');
-                img.src = `/api/thumbnails/${imageData.name}?dir=${encodeURIComponent(directoryPath)}`;
-                img.alt = imageData.name;
-                img.onerror = () => {
-                    img.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="60" height="60"%3E%3Crect width="60" height="60" fill="%23f0f0f0"/%3E%3Ctext x="50%" y="50%" text-anchor="middle" dy=".3em" fill="%23999"%3E📷%3C/text%3E%3C/svg%3E';
-                };
-                this.directoryThumbnailsEl.appendChild(img);
-            }
-
-            if (data.images.length > maxThumbnails) {
-                const moreDiv = document.createElement('div');
-                moreDiv.style.cssText = 'display: flex; align-items: center; justify-content: center; background: #e9e9e9; color: #666; font-size: 0.8rem; border-radius: 3px;';
-                moreDiv.textContent = `+${data.images.length - maxThumbnails}`;
-                this.directoryThumbnailsEl.appendChild(moreDiv);
-            }
-
-        } catch (error) {
-            this.directoryThumbnailsEl.innerHTML = '<div class="no-preview">Could not load preview</div>';
-        }
     }
 
     async addCurrentDirectoryToPlaylist() {
@@ -700,10 +651,7 @@ class ChromecastSlideshowController {
     async openPicker(mode) {
         this.pickerMode = mode;
         this.pickerTitleEl.textContent = mode === 'load' ? 'Load a show' : 'Add a show to the playlist';
-        this.pickerConfirmBtn.textContent = mode === 'load' ? 'Load this show' : 'Add to playlist';
-        this.pickerConfirmBtn.disabled = true;
         this.showPickerEl.style.display = '';
-        this.directoryThumbnailsEl.innerHTML = '<div class="no-preview">Browse to a folder to see a preview</div>';
         // No path argument: the server opens the configured library folder.
         await this.browseDirectory(null);
     }
@@ -713,14 +661,27 @@ class ChromecastSlideshowController {
         this.pickerMode = null;
     }
 
-    /** Use the folder currently open in the picker. */
-    async confirmPicker() {
-        const path = this.currentPath;
-        if (!path) return;
+    /**
+     * One click on a folder does the thing: a folder holding images is a show,
+     * so load (and play) or add it; a folder holding only other folders is a
+     * container, so navigate into it instead.
+     */
+    async pickDirectory(path) {
         const mode = this.pickerMode;
-        this.closePicker();
+        let hasImages = false;
+        try {
+            const data = await (await fetch(`/api/directory-images?path=${encodeURIComponent(path)}`)).json();
+            hasImages = !!(data.images && data.images.length);
+        } catch (e) { /* treat as a container and browse in */ }
 
+        if (!hasImages) {
+            await this.browseDirectory(path);
+            return;
+        }
+
+        this.closePicker();
         if (mode === 'add') {
+            this.currentPath = path;
             await this.addCurrentDirectoryToPlaylist();
             // Adding means you're working on the playlist, so show it.
             this.selection = { type: 'playlist', name: this.currentSavedPlaylistName, path: null };
@@ -950,8 +911,7 @@ class ChromecastSlideshowController {
     }
 
     updateStartButtonState() {
-        // The picker's confirm button is the only thing gated on a browsed folder.
-        if (this.pickerConfirmBtn) this.pickerConfirmBtn.disabled = !this.currentPath;
+        // Nothing to gate: the picker acts on click, not on a confirm button.
     }
 
     async saveSettings(additionalSettings = {}) {
