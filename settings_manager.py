@@ -6,6 +6,9 @@ import shutil
 from typing import Optional, Dict, List, Any
 from pathlib import Path
 
+# Where "Browse Slideshows" starts. Overridable via the library_directory setting.
+DEFAULT_LIBRARY_DIRECTORY = "/Volumes/Dave's T7 SSD/Dropbox/shows - vertical"
+
 
 class SettingsManager:
     def __init__(self, db_name: str = "config.db", menu_config_name: str = "menu_config.json"):
@@ -196,6 +199,16 @@ class SettingsManager:
         """Get the currently selected image directory."""
         directory = self.get_setting('selected_directory')
         return directory if directory else os.path.expanduser('~')
+
+    def get_library_directory(self) -> str:
+        """Root folder that 'Browse Slideshows' opens at.
+
+        Defaults to the shows folder on the external drive so browsing doesn't
+        start from /Volumes every time; settable so it can be repointed if the
+        drive or folder ever moves.
+        """
+        directory = self.get_setting('library_directory')
+        return directory if directory else DEFAULT_LIBRARY_DIRECTORY
     
     def get_thumbnail_size(self) -> int:
         """Get thumbnail size in pixels."""

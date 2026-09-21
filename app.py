@@ -49,7 +49,8 @@ chromecast_manager = ChromecastManager(settings_manager)
 slideshow_controller = SlideshowController(settings_manager, chromecast_manager)
 slideshow_controller.init_app(socketio, app)
 power_scheduler = PowerScheduler(settings_manager, slideshow_controller, socketio,
-                                 discover_fn=lambda: run_discovery_sync())
+                                 discover_fn=lambda: run_discovery_sync(),
+                                 all_shows_fn=lambda: build_all_shows_items())
 
 # Configure logging — ONLY use a file handler.  DO NOT log to stderr.
 # In a py2app macOS bundle, stderr is a pipe with a finite buffer (~64KB).
@@ -215,8 +216,14 @@ def index():
 
 @app.route('/api/settings', methods=['GET'])
 def get_settings():
-    """Get all current settings."""
-    return jsonify(settings_manager.get_all_settings())
+    """Get all current settings.
+
+    library_directory is filled in from its default when unset, so the UI shows
+    the folder Browse will actually open rather than an empty box.
+    """
+    settings = settings_manager.get_all_settings()
+    settings.setdefault('library_directory', settings_manager.get_library_directory())
+    return jsonify(settings)
 
 
 @app.route('/api/settings', methods=['POST'])
@@ -235,7 +242,9 @@ def save_settings():
 def browse_directories():
     """Browse directory structure for image selection."""
     explicit_path = request.args.get('path')
-    path = explicit_path or settings_manager.get_selected_directory()
+    # With no path, open the library folder rather than wherever we last were,
+    # so browsing always starts at the shows folder.
+    path = explicit_path or settings_manager.get_library_directory()
 
     def list_directory(directory_path):
         items = []
@@ -248,11 +257,18 @@ def browse_directories():
 
     try:
         directory_path = Path(path)
-        if not directory_path.exists() or not directory_path.is_dir():
+        missing = not directory_path.exists() or not directory_path.is_dir()
+        if missing:
             directory_path = Path(os.path.expanduser('~'))
 
         items = list_directory(directory_path)
-        return jsonify({'current_path': str(directory_path), 'items': items})
+        return jsonify({
+            'current_path': str(directory_path),
+            'items': items,
+            # Tell the frontend we couldn't open what was asked for (e.g. the
+            # external drive isn't mounted) instead of silently landing at home.
+            'requested_path_missing': path if missing else None,
+        })
 
     except Exception as e:
         logger.error(f"Error browsing directory {path}: {e}")
@@ -471,13 +487,30 @@ def skip_slideshow():
 # Playlist API endpoints
 @app.route('/api/playlist', methods=['GET'])
 def get_playlist():
-    """Get current playlist items."""
+    """Get the playlist to display.
+
+    While a virtual playlist (Play All Shows) is running, report that instead
+    of the stored one so the UI shows what's actually playing. The stored
+    playlist is untouched and comes back as soon as playback stops.
+    """
+    virtual = slideshow_controller.virtual_items
+    if virtual is not None:
+        return jsonify({
+            'items': virtual,
+            'total_duration': sum(i.get('duration_minutes', 0) for i in virtual),
+            'item_count': len(virtual),
+            'virtual': True,
+            'virtual_name': slideshow_controller.virtual_name,
+        })
+
     items = settings_manager.get_playlist_items()
     total_duration = settings_manager.get_playlist_total_duration()
     return jsonify({
         'items': items,
         'total_duration': total_duration,
-        'item_count': len(items)
+        'item_count': len(items),
+        'virtual': False,
+        'virtual_name': None,
     })
 
 
@@ -569,9 +602,9 @@ def clear_playlist():
 
 @app.route('/api/playlist/start', methods=['POST'])
 def start_playlist():
-    """Start playlist mode slideshow."""
+    """Start playlist mode slideshow, taking over from a single show if one is playing."""
     try:
-        result = slideshow_controller.start_playlist()
+        result = slideshow_controller.play_current_playlist()
         logger.info(f"Start playlist result: {result}")
         
         # Always emit status update, even if already running (for frontend sync)
@@ -608,9 +641,34 @@ def pause_playlist():
     try:
         slideshow_controller.toggle_playlist_pause()
         socketio.emit('playlist_paused')
+        # Push the new state too, so the Pause/Resume label and the "paused"
+        # marker on the Now playing line update immediately rather than
+        # waiting for the next periodic status push.
+        socketio.emit('playlist_status_update', slideshow_controller.get_playlist_status())
         return jsonify({'status': 'success'})
     except Exception as e:
         logger.error(f"Error pausing playlist: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/show/play', methods=['POST'])
+def play_show():
+    """Switch to a single show as one atomic server-side operation."""
+    data = request.get_json() or {}
+    path = data.get('path')
+    if not path:
+        return jsonify({'error': 'path is required'}), 400
+
+    try:
+        result = slideshow_controller.play_single_show(path)
+        socketio.emit('playlist_stopped')
+        socketio.emit('playlist_status_update', slideshow_controller.get_playlist_status())
+        if not result.get('success'):
+            return jsonify({'error': result.get('error', 'Failed to start show')}), 400
+        logger.info(f"Playing single show: {path}")
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logger.error(f"Error playing show: {e}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -728,6 +786,87 @@ def load_saved_playlist(playlist_id):
         return jsonify({'id': saved['id'], 'name': saved['name']})
     except Exception as e:
         logger.error(f"Error loading saved playlist: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+ALL_SHOWS_NAME = 'All Shows'
+
+
+def build_all_shows_items():
+    """Every show across all saved playlists, de-duplicated by directory path.
+
+    Order follows the saved-playlist listing (most recently updated first),
+    keeping the first occurrence of each show.
+    """
+    seen = set()
+    merged = []
+    for summary in settings_manager.list_saved_playlists():
+        saved = settings_manager.get_saved_playlist(summary['id'])
+        if not saved:
+            continue
+        for item in saved['items']:
+            path = item.get('directory_path')
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            merged.append({
+                'id': f'all-{len(merged) + 1}',
+                'directory_path': path,
+                'directory_name': item.get('directory_name') or os.path.basename(path),
+                'duration_minutes': item.get('duration_minutes', 10),
+                'order_index': len(merged) + 1,
+                'is_valid': 1 if os.path.isdir(path) else 0,
+            })
+    return merged
+
+
+@app.route('/api/playlist/all-shows', methods=['GET'])
+def preview_all_shows():
+    """The merged All Shows list, without playing it.
+
+    Lets the UI load All Shows like any other playlist — shown in the list
+    first, started when Play is pressed.
+    """
+    items = build_all_shows_items()
+    return jsonify({
+        'items': items,
+        'item_count': len(items),
+        'name': ALL_SHOWS_NAME,
+    })
+
+
+@app.route('/api/playlist/play-all-shows', methods=['POST'])
+def play_all_shows():
+    """Play every show from all saved playlists as a VIRTUAL playlist.
+
+    Stops whatever is running and plays the merged list, which is also what
+    /api/playlist then reports so the UI can display it. The stored playlist is
+    never modified — stopping restores it.
+    """
+    try:
+        merged = build_all_shows_items()
+        if not merged:
+            return jsonify({'error': 'No shows found in any saved playlist'}), 400
+
+        slideshow_controller.stop_playlist()
+        slideshow_controller.stop_slideshow()
+
+        result = slideshow_controller.start_playlist(items=merged, name=ALL_SHOWS_NAME)
+        if not result.get('success'):
+            return jsonify({'error': result.get('error', 'Failed to start')}), 400
+
+        skipped = sum(1 for i in merged if not i['is_valid'])
+        logger.info(f"Playing all shows: {len(merged) - skipped} shows ({skipped} missing)")
+
+        # Deliberately no 'playlist_updated' emit: the stored playlist hasn't
+        # changed, and clients treat that event as a user edit (it would raise
+        # a false "unsaved changes" marker). Clients refresh from the status
+        # event below.
+        socketio.emit('playlist_started')
+        socketio.emit('playlist_status_update', slideshow_controller.get_playlist_status())
+        return jsonify({'count': len(merged), 'skipped': skipped, 'name': ALL_SHOWS_NAME})
+    except Exception as e:
+        logger.error(f"Error playing all shows: {e}")
         return jsonify({'error': str(e)}), 500
 
 
