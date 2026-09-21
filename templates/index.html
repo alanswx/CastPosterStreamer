@@ -11,23 +11,17 @@
     <div class="container">
         <header>
             <h1>Virtual Poster Display</h1>
-            <div class="status-indicator">
-                <span id="connection-status" class="status-disconnected">Disconnected</span>
-            </div>
         </header>
 
         <main>
-            <!-- Player Section -->
-            <section class="panel">
-                <div class="control-buttons player-buttons">
-                    <button id="start-playlist" class="btn btn-success btn-sm">▶️ Play</button>
-                    <button id="pause-slideshow" class="btn btn-warning btn-sm" disabled>⏸️ Pause</button>
-                    <button id="skip-slideshow" class="btn btn-secondary btn-sm" disabled>⏭️ Skip</button>
-                    <button id="play-all-shows" class="btn btn-primary btn-sm">▶️ Play All Shows</button>
-                    <button id="stop-slideshow" class="btn btn-danger btn-sm" disabled>⏹️ Stop</button>
-                    <input type="checkbox" id="rotation-enabled" checked style="display:none">
-                </div>
-            </section>
+            <!-- Player controls: no panel chrome, just centred under the title -->
+            <div class="control-buttons player-buttons">
+                <button id="start-playlist" class="btn btn-success btn-sm">▶️ Play</button>
+                <button id="pause-slideshow" class="btn btn-warning btn-sm" disabled>⏸️ Pause</button>
+                <button id="skip-slideshow" class="btn btn-secondary btn-sm" disabled>⏭️ Skip</button>
+                <button id="stop-slideshow" class="btn btn-danger btn-sm" disabled>⏹️ Stop</button>
+                <input type="checkbox" id="rotation-enabled" checked style="display:none">
+            </div>
 
             <!-- Now Playing / Up Next Section (picker lives inside) -->
             <section class="panel">
@@ -137,7 +131,9 @@
 
             <!-- Error Log Section -->
             <section class="panel">
-                <h2>Status & Error Log</h2>
+                <h2>Status &amp; Error Log
+                    <span id="connection-status" class="status-disconnected">Disconnected</span>
+                </h2>
                 <div class="log-controls">
                     <button id="clear-log" class="btn btn-secondary">Clear Log</button>
                     <button id="test-websocket" class="btn btn-primary">🧪 Test WebSocket</button>

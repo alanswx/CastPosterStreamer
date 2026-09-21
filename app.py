@@ -49,7 +49,8 @@ chromecast_manager = ChromecastManager(settings_manager)
 slideshow_controller = SlideshowController(settings_manager, chromecast_manager)
 slideshow_controller.init_app(socketio, app)
 power_scheduler = PowerScheduler(settings_manager, slideshow_controller, socketio,
-                                 discover_fn=lambda: run_discovery_sync())
+                                 discover_fn=lambda: run_discovery_sync(),
+                                 all_shows_fn=lambda: build_all_shows_items())
 
 # Configure logging — ONLY use a file handler.  DO NOT log to stderr.
 # In a py2app macOS bundle, stderr is a pipe with a finite buffer (~64KB).
@@ -817,6 +818,21 @@ def build_all_shows_items():
                 'is_valid': 1 if os.path.isdir(path) else 0,
             })
     return merged
+
+
+@app.route('/api/playlist/all-shows', methods=['GET'])
+def preview_all_shows():
+    """The merged All Shows list, without playing it.
+
+    Lets the UI load All Shows like any other playlist — shown in the list
+    first, started when Play is pressed.
+    """
+    items = build_all_shows_items()
+    return jsonify({
+        'items': items,
+        'item_count': len(items),
+        'name': ALL_SHOWS_NAME,
+    })
 
 
 @app.route('/api/playlist/play-all-shows', methods=['POST'])

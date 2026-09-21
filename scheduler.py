@@ -39,7 +39,8 @@ _HHMM = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 
 
 class PowerScheduler:
-    def __init__(self, settings_manager, slideshow_controller, socketio, discover_fn=None):
+    def __init__(self, settings_manager, slideshow_controller, socketio,
+                 discover_fn=None, all_shows_fn=None):
         self.settings_manager = settings_manager
         self.slideshow_controller = slideshow_controller
         self.socketio = socketio
@@ -47,6 +48,8 @@ class PowerScheduler:
         # Needed because nothing discovers the screens at startup, so after a
         # reboot the playlist can't start until something does.
         self.discover_fn = discover_fn
+        # Builds the merged All Shows list, for when that's what's loaded.
+        self.all_shows_fn = all_shows_fn
         self.token_dir = settings_manager.app_support_dir / "tv_tokens"
 
         self._lock = threading.Lock()          # monkey-patched -> gevent-safe
@@ -216,6 +219,11 @@ class PowerScheduler:
                 label = path.rstrip("/").split("/")[-1] or path
                 res = sc.play_single_show(path)
                 started, what = res.get("success"), f"show started: {label}"
+            elif kind == "all_shows" and self.all_shows_fn:
+                items = self.all_shows_fn()
+                res = sc.start_playlist(items=items, name="All Shows") if items \
+                    else {"success": False, "error": "no shows in any saved playlist"}
+                started, what = res.get("success"), f"all shows started ({len(items)} shows)"
             else:
                 res = sc.play_current_playlist()
                 started, what = res.get("success"), "playlist started"

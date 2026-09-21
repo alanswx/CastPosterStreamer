@@ -40,7 +40,6 @@ class ChromecastSlideshowController {
         this.pauseSlideshowBtn = document.getElementById('pause-slideshow');
         this.skipSlideshowBtn = document.getElementById('skip-slideshow');
         this.stopSlideshowBtn = document.getElementById('stop-slideshow');
-        this.playAllShowsBtn = document.getElementById('play-all-shows');
 
         // Playlist / show picker
         this.playlistLabelEl = document.getElementById('playlist-label');
@@ -56,7 +55,9 @@ class ChromecastSlideshowController {
         this.selection = { type: 'playlist', name: null, path: null };
         this.isVirtualPlaylist = false;
         this._wasVirtual = false;
+        this._wasAllShows = false;
         this.showPlaying = false;       // a single show (not a playlist) is casting
+        this.allShowsQueue = null;      // All Shows loaded but not yet playing
 
         // Status elements
         this.connectionStatusEl = document.getElementById('connection-status');
@@ -114,7 +115,6 @@ class ChromecastSlideshowController {
         this.addShowBtn.addEventListener('click', () => this.openPicker('add'));
         this.pickerConfirmBtn.addEventListener('click', () => this.confirmPicker());
         this.pickerCloseBtn.addEventListener('click', () => this.closePicker());
-        this.playAllShowsBtn.addEventListener('click', () => this.playAllShows());
 
         // Log events
         this.clearLogBtn.addEventListener('click', () => this.clearLog());
@@ -327,6 +327,17 @@ class ChromecastSlideshowController {
             if (settings.selected_directory) {
                 this.selectedDirectory = settings.selected_directory;
                 // selectedDirectoryEl removed from UI - no longer needed
+            }
+
+            // A loaded All Shows queue survives a reload.
+            if (settings.loaded_kind === 'all_shows') {
+                try {
+                    const all = await (await fetch('/api/playlist/all-shows')).json();
+                    if (all.item_count) {
+                        this.allShowsQueue = all.items;
+                        this.selection = { type: 'all-shows', name: all.name, path: null };
+                    }
+                } catch (e) { /* fall through to the stored playlist */ }
             }
 
             // A single loaded show survives a reload.
@@ -577,6 +588,10 @@ class ChromecastSlideshowController {
             await this.playShow(this.selection.path);   // stops the playlist first
             return;
         }
+        if (this.selection.type === 'all-shows') {
+            await this.playAllShows();                  // stops both, then plays
+            return;
+        }
 
         // The server stops a running single show for us, so there's no
         // client-side state to get wrong here.
@@ -619,6 +634,30 @@ class ChromecastSlideshowController {
             this.updateSlideshowControls(false, 'show');
         } catch (error) {
             this.logMessage(`Error playing show: ${error.message}`, 'error');
+        }
+    }
+
+    /**
+     * Load All Shows (every show across all saved playlists) as the queue,
+     * without playing it — Play starts it. The stored playlist is untouched.
+     */
+    async loadAllShows() {
+        try {
+            const response = await fetch('/api/playlist/all-shows');
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Failed to load All Shows');
+            if (!data.item_count) {
+                this.logMessage('No shows found in any saved playlist', 'error');
+                return;
+            }
+
+            this.allShowsQueue = data.items;
+            this.selection = { type: 'all-shows', name: data.name, path: null };
+            await this.saveSettings({ loaded_kind: 'all_shows' });
+            this.logMessage(`Loaded All Shows: ${data.item_count} shows — press Play to start`, 'success');
+            await this.loadPlaylist();
+        } catch (error) {
+            this.logMessage(`Error loading All Shows: ${error.message}`, 'error');
         }
     }
 
@@ -1079,6 +1118,12 @@ class ChromecastSlideshowController {
                 this.playlistLabelEl.textContent = 'Now Playing/Up Next:';
                 this.playlistNameEl.textContent = data.virtual_name || 'All Shows';
                 this.playlistDirtyEl.style.display = 'none';
+            } else if (this.selection.type === 'all-shows' && this.allShowsQueue) {
+                // All Shows loaded but not yet playing.
+                this.playlistItems = this.allShowsQueue;
+                this.playlistLabelEl.textContent = 'Now Playing/Up Next:';
+                this.playlistNameEl.textContent = 'All Shows';
+                this.playlistDirtyEl.style.display = 'none';
             } else if (this.selection.type === 'show' && this.selection.path) {
                 // Single show: a one-item list, so what you see is what plays.
                 this.playlistItems = [{
@@ -1094,13 +1139,14 @@ class ChromecastSlideshowController {
             } else {
                 this.playlistItems = data.items || [];
                 this.playlistLabelEl.textContent = 'Now Playing/Up Next:';
-                if (this._wasVirtual || this._wasShow) {
+                if (this._wasVirtual || this._wasShow || this._wasAllShows) {
                     this.playlistNameEl.textContent = this.currentSavedPlaylistName;
                 }
             }
 
             this._wasVirtual = this.isVirtualPlaylist;
             this._wasShow = this.selection.type === 'show';
+            this._wasAllShows = this.selection.type === 'all-shows';
             this.updatePlaylistDisplay();
         } catch (error) {
             this.logMessage(`Error loading playlist: ${error.message}`, 'error');
@@ -1268,8 +1314,9 @@ class ChromecastSlideshowController {
         this.playlistLabelEl.textContent = 'Now Playing/Up Next:';
         this.playlistNameEl.textContent = name;
         this.playlistDirtyEl.style.display = 'none';
-        // Loading or creating a playlist leaves single-show mode.
+        // Loading or creating a playlist leaves single-show / All Shows mode.
         this.selection = { type: 'playlist', name, path: null };
+        this.allShowsQueue = null;
         // Persist what's loaded so it survives a page reload (and reappears
         // correctly after an All Shows run).
         this.saveSettings({ current_playlist_name: name, loaded_kind: 'playlist' });
@@ -1365,6 +1412,18 @@ class ChromecastSlideshowController {
             const response = await fetch('/api/saved-playlists');
             const playlists = await response.json();
             this.loadPlaylistDropdown.innerHTML = '';
+
+            // "All Shows" first: every show across all saved playlists.
+            const allItem = document.createElement('div');
+            allItem.className = 'playlist-dropdown-item playlist-dropdown-all';
+            allItem.innerHTML = '<span class="playlist-dropdown-item-name">All Shows</span>';
+            allItem.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.hideLoadDropdown();
+                this.loadAllShows();
+            });
+            this.loadPlaylistDropdown.appendChild(allItem);
+
             if (playlists.length === 0) {
                 this.loadPlaylistDropdown.innerHTML = '<div class="playlist-dropdown-empty">No saved playlists</div>';
             } else {
