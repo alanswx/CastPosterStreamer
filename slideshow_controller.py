@@ -532,22 +532,43 @@ class SlideshowController:
             return
         
         self.logger.info("Playlist loop - Outer loop started.")
+        # Skipping a single unreadable folder is cheap, but if NOTHING is
+        # playable (drive unplugged, permissions lost) a flat 1s retry spins
+        # through the whole playlist every second and floods the log. Count
+        # consecutive failures and back off once a full pass has failed.
+        consecutive_failures = 0
+        retry_delay = 0
         while self.is_playlist_running:
             try:
                 # Get current playlist item
                 current_item = valid_items[self.current_playlist_index % len(valid_items)]
                 directory = current_item['directory_path']
                 duration_minutes = current_item['duration_minutes']
-                
+
                 self.logger.info(f"Playlist item starting: {current_item['directory_name']} for {duration_minutes} min.")
-                
+
                 # Start slideshow for this directory
                 if not self._start_directory_slideshow(directory):
-                    self.logger.error(f"Failed to start slideshow for directory: {directory}, skipping.")
+                    consecutive_failures += 1
                     self.current_playlist_index = (self.current_playlist_index + 1) % len(valid_items)
-                    self._sleep(1) # Avoid fast spinning loop on error
+
+                    if consecutive_failures < len(valid_items):
+                        # Some items may still be fine — skip this one and move on.
+                        self.logger.error(f"Failed to start slideshow for directory: {directory}, skipping.")
+                        self._sleep(1)
+                    else:
+                        # A whole pass with nothing playable.
+                        retry_delay = min(60, retry_delay * 2 if retry_delay else 5)
+                        self.logger.error(
+                            f"No playable directories in the last {len(valid_items)} attempts "
+                            f"(is the drive connected?) — retrying in {retry_delay}s"
+                        )
+                        self._sleep(retry_delay)
                     continue
-                
+
+                consecutive_failures = 0
+                retry_delay = 0
+
                 # Reset timing
                 item_start_time = time.time()
                 item_accumulated_time = 0
