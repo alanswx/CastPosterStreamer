@@ -47,7 +47,13 @@ class SlideshowController:
         self.playlist_pause_time = None
         self.playlist_accumulated_time = 0
         self.skip_requested = False
-        
+
+        # A "virtual" playlist is played and displayed without ever being
+        # written to the stored playlist (used by Play All Shows), so the
+        # user's real playlist survives untouched.
+        self.virtual_items = None
+        self.virtual_name = None
+
         # Use gevent lock if available, otherwise regular threading lock
         if GEVENT_AVAILABLE:
             self._lock = gevent.lock.BoundedSemaphore()
@@ -408,19 +414,28 @@ class SlideshowController:
             self.image_server.stop()
     
     # Playlist functionality
-    def start_playlist(self) -> Dict[str, Any]:
-        """Start playlist mode slideshow."""
+    def start_playlist(self, items: Optional[List[Dict[str, Any]]] = None,
+                       name: Optional[str] = None) -> Dict[str, Any]:
+        """Start playlist mode slideshow.
+
+        With `items`, play that exact list as a virtual playlist instead of the
+        stored one. Nothing is written to the playlist_items table, so the
+        user's own playlist is left intact.
+        """
         with self._lock:
             if self.is_playlist_running:
                 return {'success': False, 'error': 'Playlist is already running'}
-            
+
             if self.is_slideshow_running:
                 return {'success': False, 'error': 'Regular slideshow is running. Stop it first.'}
-        
+
         # Get playlist items
-        playlist_items = self.settings_manager.get_playlist_items()
-        valid_items = [item for item in playlist_items if item['is_valid']]
-        
+        if items is not None:
+            valid_items = [i for i in items if i.get('is_valid', 1)]
+        else:
+            playlist_items = self.settings_manager.get_playlist_items()
+            valid_items = [item for item in playlist_items if item['is_valid']]
+
         if not valid_items:
             return {'success': False, 'error': 'No valid directories in playlist'}
         
@@ -431,6 +446,8 @@ class SlideshowController:
         
         # Start playlist thread
         with self._lock:
+            self.virtual_items = valid_items if items is not None else None
+            self.virtual_name = name if items is not None else None
             self.is_playlist_running = True
             self.is_playlist_paused = False
             self.current_playlist_index = 0
@@ -452,7 +469,10 @@ class SlideshowController:
             self.is_playlist_running = False
             self.is_playlist_paused = False
             self.skip_requested = False
-        
+            # Leaving virtual mode: the stored playlist becomes current again.
+            self.virtual_items = None
+            self.virtual_name = None
+
         # Wait for playlist thread to finish
         if self.playlist_thread:
             self.playlist_thread.join(timeout=5)
@@ -503,9 +523,8 @@ class SlideshowController:
     
     def _playlist_loop(self):
         """Main playlist loop that runs in a background thread."""
-        playlist_items = self.settings_manager.get_playlist_items()
-        valid_items = [item for item in playlist_items if item['is_valid']]
-        
+        valid_items = self._active_items()
+
         if not valid_items:
             self.logger.error("No valid playlist items found")
             with self._lock:
@@ -639,6 +658,14 @@ class SlideshowController:
 
         return True
     
+    def _active_items(self) -> List[Dict[str, Any]]:
+        """Items currently being played: the virtual list if one is active,
+        otherwise the stored playlist (re-read so live edits take effect)."""
+        if self.virtual_items is not None:
+            return self.virtual_items
+        playlist_items = self.settings_manager.get_playlist_items()
+        return [item for item in playlist_items if item['is_valid']]
+
     def get_playlist_status(self) -> Dict[str, Any]:
         """Get current playlist execution status."""
         if not self.is_playlist_running:
@@ -648,12 +675,12 @@ class SlideshowController:
                 'paused': False,
                 'current_item': None,
                 'time_remaining': 0,
-                'total_items': 0
+                'total_items': 0,
+                'virtual_name': None
             }
-        
-        playlist_items = self.settings_manager.get_playlist_items()
-        valid_items = [item for item in playlist_items if item['is_valid']]
-        
+
+        valid_items = self._active_items()
+
         if not valid_items:
             self.logger.debug("get_playlist_status: no valid items found")
             return {
@@ -686,5 +713,6 @@ class SlideshowController:
             'current_item': current_item,
             'current_index': self.current_playlist_index,
             'time_remaining': int(time_remaining),
-            'total_items': len(valid_items)
+            'total_items': len(valid_items),
+            'virtual_name': self.virtual_name
         }

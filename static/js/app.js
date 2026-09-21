@@ -37,11 +37,20 @@ class ChromecastSlideshowController {
         // Control elements
         this.slideshowIntervalEl = document.getElementById('slideshow-interval');
         this.rotationEnabledEl = document.getElementById('rotation-enabled');
-        this.startSingleDirectoryBtn = document.getElementById('start-single-directory');
-        this.startPlaylistBtn = document.getElementById('start-playlist');
+        this.startPlaylistBtn = document.getElementById('start-playlist');   // main Play
         this.pauseSlideshowBtn = document.getElementById('pause-slideshow');
         this.skipSlideshowBtn = document.getElementById('skip-slideshow');
         this.stopSlideshowBtn = document.getElementById('stop-slideshow');
+        this.nowPlayingEl = document.getElementById('now-playing');
+        this.browseSlideshowsBtn = document.getElementById('browse-slideshows');
+        this.playShowBtn = document.getElementById('play-show');
+        this.playAllShowsBtn = document.getElementById('play-all-shows');
+        this.libraryFolderEl = document.getElementById('library-folder');
+
+        // What the Play button will start: the playlist, or a single browsed show.
+        this.selection = { type: 'playlist', name: null, path: null };
+        this.isVirtualPlaylist = false;
+        this._wasVirtual = false;
 
         // Status elements
         this.connectionStatusEl = document.getElementById('connection-status');
@@ -95,11 +104,16 @@ class ChromecastSlideshowController {
         // Control events
         this.slideshowIntervalEl.addEventListener('change', () => this.saveSettings());
         this.rotationEnabledEl.addEventListener('change', () => this.saveSettings());
-        this.startSingleDirectoryBtn.addEventListener('click', () => this.startSingleDirectorySlideshow());
-        this.startPlaylistBtn.addEventListener('click', () => this.startPlaylistSlideshow());
+        this.startPlaylistBtn.addEventListener('click', () => this.playSelected());
         this.pauseSlideshowBtn.addEventListener('click', () => this.pauseSlideshow());
         this.skipSlideshowBtn.addEventListener('click', () => this.skipSlideshow());
         this.stopSlideshowBtn.addEventListener('click', () => this.stopSlideshow());
+
+        // Browse / show events
+        this.browseSlideshowsBtn.addEventListener('click', () => this.browseLibrary());
+        this.playShowBtn.addEventListener('click', () => this.playShow());
+        this.playAllShowsBtn.addEventListener('click', () => this.playAllShows());
+        this.libraryFolderEl.addEventListener('change', () => this.saveLibraryFolder());
 
         // Log events
         this.clearLogBtn.addEventListener('click', () => this.clearLog());
@@ -272,6 +286,17 @@ class ChromecastSlideshowController {
                 this.selectedDirectory = settings.selected_directory;
                 // selectedDirectoryEl removed from UI - no longer needed
             }
+
+            if (this.libraryFolderEl) {
+                this.libraryFolderEl.value = settings.library_directory || '';
+            }
+
+            if (settings.current_playlist_name) {
+                this.currentSavedPlaylistName = settings.current_playlist_name;
+                if (!this.isVirtualPlaylist) {
+                    this.playlistNameEl.textContent = settings.current_playlist_name;
+                }
+            }
         } catch (error) {
             this.logMessage(`Error loading settings: ${error.message}`, 'error');
         }
@@ -293,11 +318,19 @@ class ChromecastSlideshowController {
                 return;
             }
 
+            if (data.requested_path_missing) {
+                this.logMessage(
+                    `Could not open "${data.requested_path_missing}" (is the external drive connected?) — showing ${data.current_path} instead`,
+                    'error'
+                );
+            }
+
             this.currentPath = data.current_path;
             this.currentPathEl.textContent = data.current_path;
             this.updateDirectoryList(data.items || []);
 
             this.addDirectoryToPlaylistBtn.disabled = false;
+            if (this.playShowBtn) this.playShowBtn.disabled = false;
 
             // Load directory thumbnails
             this.loadDirectoryThumbnails(data.current_path);
@@ -486,23 +519,104 @@ class ChromecastSlideshowController {
         this.socket.emit('test_websocket');
     }
 
-    async startSingleDirectorySlideshow() {
-        if (!this.canStartSlideshow()) {
+    /** Play button: start whatever is currently selected. */
+    async playSelected() {
+        if (this.selection.type === 'show' && this.selection.path) {
+            await this.playShow(this.selection.path);
+        } else {
+            await this.startPlaylistSlideshow();
+        }
+    }
+
+    /**
+     * Play a single show, overriding the playlist.
+     * The backend refuses to start a single-directory slideshow while a
+     * playlist is running, so stop it first. The playlist itself stays loaded.
+     */
+    async playShow(path = null) {
+        const showPath = path || this.currentPath;
+        if (!showPath) {
+            this.logMessage('Browse to a show first', 'error');
             return;
         }
+        const name = showPath.split('/').filter(Boolean).pop() || showPath;
 
         try {
+            await fetch('/api/playlist/stop', { method: 'POST' });
+            await fetch('/api/slideshow/stop', { method: 'POST' });
+
+            await this.saveSettings({ selected_directory: showPath });
+            this.selectedDirectory = showPath;
+
             const response = await fetch('/api/slideshow/start', { method: 'POST' });
             const result = await response.json();
+            if (!response.ok) throw new Error(result.error || 'Failed to start show');
 
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to start slideshow');
-            }
-
-            this.slideshowModeEl.textContent = 'Single Directory';
+            this.selection = { type: 'show', name, path: showPath };
+            this.slideshowModeEl.textContent = 'Single Show';
+            this.logMessage(`Playing show: ${name}`, 'success');
+            this.updateNowPlaying();
+            this.updateSlideshowControls(true, 'show');
         } catch (error) {
-            this.logMessage(`Error starting slideshow: ${error.message}`, 'error');
+            this.logMessage(`Error playing show: ${error.message}`, 'error');
         }
+    }
+
+    /**
+     * Play every show from all saved playlists as a VIRTUAL playlist: it stops
+     * what's running and is shown in the playlist box so you can see what's in
+     * it, but the stored playlist is never modified and returns on stop.
+     */
+    async playAllShows() {
+        try {
+            const response = await fetch('/api/playlist/play-all-shows', { method: 'POST' });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error || 'Failed to play all shows');
+
+            const skipped = result.skipped
+                ? ` (${result.skipped} skipped — folder missing)` : '';
+            this.logMessage(
+                `Playing All Shows: ${result.count - (result.skipped || 0)} show(s) from saved playlists${skipped}`,
+                'success'
+            );
+
+            this.selection = { type: 'playlist', name: result.name, path: null };
+            await this.loadPlaylist();
+        } catch (error) {
+            this.logMessage(`Error playing all shows: ${error.message}`, 'error');
+        }
+    }
+
+    /** Browse Slideshows: always open the configured library folder. */
+    async browseLibrary() {
+        await this.browseDirectory(this.libraryFolderEl.value || null);
+    }
+
+    async saveLibraryFolder() {
+        const path = this.libraryFolderEl.value.trim();
+        await this.saveSettings({ library_directory: path });
+        this.logMessage(`Library folder set to: ${path}`, 'success');
+    }
+
+    /** Reflect the selection (and, while running, what's actually playing). */
+    updateNowPlaying(playlistStatus = null) {
+        if (!this.nowPlayingEl) return;
+
+        const item = playlistStatus && playlistStatus.current_item;
+        if (playlistStatus && playlistStatus.running && item) {
+            const listName = playlistStatus.virtual_name
+                || (this.isVirtualPlaylist ? 'All Shows' : this.currentSavedPlaylistName);
+            this.nowPlayingEl.textContent = `${listName} — ${item.directory_name}`;
+            return;
+        }
+        if (this.selection.type === 'show' && this.selection.name) {
+            this.nowPlayingEl.textContent = `Show: ${this.selection.name}`;
+            return;
+        }
+        const count = this.playlistItems.length;
+        this.nowPlayingEl.textContent = count
+            ? `Playlist: ${this.currentSavedPlaylistName} (${count} show${count === 1 ? '' : 's'})`
+            : 'Nothing playing';
     }
 
     async startPlaylistSlideshow() {
@@ -517,6 +631,8 @@ class ChromecastSlideshowController {
 
             // Removed manual mode setting - rely on WebSocket update
             // this.slideshowModeEl.textContent = 'Playlist Mode';
+            this.selection = { type: 'playlist', name: this.currentSavedPlaylistName, path: null };
+            this.updateNowPlaying();
             this.logMessage('Playlist started', 'success');
         } catch (error) {
             this.logMessage(`Error starting playlist: ${error.message}`, 'error');
@@ -593,6 +709,12 @@ class ChromecastSlideshowController {
             this.slideshowModeEl.textContent = 'None';
             this.slideshowProgressEl.textContent = '';
 
+            // Stopping hands control back to the stored playlist, which is
+            // still loaded (and replaces the All Shows view if it was showing).
+            this.selection = { type: 'playlist', name: this.currentSavedPlaylistName, path: null };
+            await this.loadPlaylist();
+            this.updateNowPlaying();
+
             // Force enable the start button regardless of state
             this.startPlaylistBtn.disabled = false;
             this.stopSlideshowBtn.disabled = true;
@@ -629,7 +751,7 @@ class ChromecastSlideshowController {
         });
 
         console.log('🎮 Updating button states - isRunning:', isRunning, 'playlistItems.length:', this.playlistItems.length);
-        this.startSingleDirectoryBtn.disabled = isRunning || !this.canStartSlideshow();
+        if (this.playShowBtn) this.playShowBtn.disabled = !this.currentPath;
         this.startPlaylistBtn.disabled = isRunning; // Force-enable for testing
         this.pauseSlideshowBtn.disabled = !isRunning;
         this.skipSlideshowBtn.disabled = !isRunning;
@@ -689,7 +811,8 @@ class ChromecastSlideshowController {
     }
 
     updateStartButtonState() {
-        this.startSingleDirectoryBtn.disabled = !this.canStartSlideshow();
+        // Play Show only needs a browsed folder; image/device checks happen server-side.
+        if (this.playShowBtn) this.playShowBtn.disabled = !this.currentPath;
     }
 
     async saveSettings(additionalSettings = {}) {
@@ -856,6 +979,17 @@ class ChromecastSlideshowController {
             const data = await response.json();
 
             this.playlistItems = data.items || [];
+            // While a virtual playlist plays, show its name and treat it as
+            // read-only — the stored playlist is untouched underneath.
+            this.isVirtualPlaylist = !!data.virtual;
+            if (this.isVirtualPlaylist) {
+                this.playlistNameEl.textContent = data.virtual_name || 'All Shows';
+                this.playlistDirtyEl.style.display = 'none';
+            } else if (this._wasVirtual) {
+                // Just left virtual mode — restore the real playlist's name.
+                this.playlistNameEl.textContent = this.currentSavedPlaylistName;
+            }
+            this._wasVirtual = this.isVirtualPlaylist;
             this.updatePlaylistDisplay();
         } catch (error) {
             this.logMessage(`Error loading playlist: ${error.message}`, 'error');
@@ -871,6 +1005,23 @@ class ChromecastSlideshowController {
         }
 
         this.updatePlaylistButtonStates();
+
+        // A virtual playlist isn't stored, so its rows can't be edited.
+        if (this.isVirtualPlaylist) {
+            this.playlistListEl.querySelectorAll(
+                '.playlist-item-remove, .playlist-item-duration, .playlist-item-drag-handle'
+            ).forEach(el => {
+                el.disabled = true;
+                el.style.opacity = '0.35';
+                el.style.pointerEvents = 'none';
+                el.title = 'All Shows is a temporary playlist and cannot be edited';
+            });
+            this.playlistListEl.querySelectorAll('.playlist-item').forEach(el => {
+                el.draggable = false;
+            });
+        }
+
+        this.updateNowPlaying();
     }
 
     createPlaylistItemElement(item, index) {
@@ -992,6 +1143,9 @@ class ChromecastSlideshowController {
         this.currentSavedPlaylistName = name;
         this.playlistNameEl.textContent = name;
         this.playlistDirtyEl.style.display = 'none';
+        // Persist which playlist is loaded so the name survives a page reload
+        // (and reappears correctly after an All Shows run).
+        this.saveSettings({ current_playlist_name: name });
     }
 
     // --- Create (New) ---
@@ -1224,6 +1378,7 @@ class ChromecastSlideshowController {
     }
 
     updatePlaylistProgress(status) {
+        this.updateNowPlaying(status);
         if (!status.running) {
             this.slideshowProgressEl.textContent = 'Playlist stopped';
             this.slideshowProgressEl.className = 'progress-display stopped';

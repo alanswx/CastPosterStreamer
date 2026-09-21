@@ -799,6 +799,74 @@ header h1 {
     font-size: 0.9rem;
 }
 
+/* Player panel */
+.now-playing-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.now-playing-row .label {
+    font-weight: 500;
+    color: #2c3e50;
+}
+
+.now-playing-value {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: #2980b9;
+}
+
+.player-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+}
+
+/* Transport buttons: sized to content rather than stretched full width */
+.player-buttons {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.player-buttons .btn {
+    flex: 0 0 auto;
+    min-width: 92px;
+}
+
+.player-row .interval-group {
+    margin-bottom: 0;
+}
+
+/* Library folder setting */
+.library-folder-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0.5rem 0 0.75rem;
+}
+
+.library-folder-row label {
+    font-size: 0.85rem;
+    color: #555;
+    white-space: nowrap;
+}
+
+.library-folder-row input[type="text"] {
+    flex: 1;
+    min-width: 0;
+    padding: 0.3rem 0.5rem;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 0.82rem;
+    color: #555;
+}
+
 /* Screen schedule */
 .schedule-row {
     display: flex;
