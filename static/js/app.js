@@ -352,8 +352,8 @@ class ChromecastSlideshowController {
 
             if (settings.current_playlist_name) {
                 this.currentSavedPlaylistName = settings.current_playlist_name;
-                if (!this.isVirtualPlaylist) {
-                    this.playlistNameEl.textContent = settings.current_playlist_name;
+                if (!this.isVirtualPlaylist && this.selection.type !== 'show') {
+                    this.playlistNameEl.textContent = `(Playlist) ${settings.current_playlist_name}`;
                 }
             }
         } catch (error) {
@@ -1115,14 +1115,14 @@ class ChromecastSlideshowController {
 
             if (this.isVirtualPlaylist) {
                 this.playlistItems = data.items || [];
-                this.playlistLabelEl.textContent = 'Now Playing/Up Next:';
-                this.playlistNameEl.textContent = data.virtual_name || 'All Shows';
+                this.playlistLabelEl.textContent = 'Now Playing:';
+                this.playlistNameEl.textContent = `(Playlist) ${data.virtual_name || 'All Shows'}`;
                 this.playlistDirtyEl.style.display = 'none';
             } else if (this.selection.type === 'all-shows' && this.allShowsQueue) {
                 // All Shows loaded but not yet playing.
                 this.playlistItems = this.allShowsQueue;
-                this.playlistLabelEl.textContent = 'Now Playing/Up Next:';
-                this.playlistNameEl.textContent = 'All Shows';
+                this.playlistLabelEl.textContent = 'Now Playing:';
+                this.playlistNameEl.textContent = '(Playlist) All Shows';
                 this.playlistDirtyEl.style.display = 'none';
             } else if (this.selection.type === 'show' && this.selection.path) {
                 // Single show: a one-item list, so what you see is what plays.
@@ -1133,15 +1133,13 @@ class ChromecastSlideshowController {
                     duration_minutes: null,
                     is_valid: 1
                 }];
-                this.playlistLabelEl.textContent = 'Now Playing/Up Next:';
+                this.playlistLabelEl.textContent = 'Now Playing:';
                 this.playlistNameEl.textContent = this.selection.name;
                 this.playlistDirtyEl.style.display = 'none';
             } else {
                 this.playlistItems = data.items || [];
-                this.playlistLabelEl.textContent = 'Now Playing/Up Next:';
-                if (this._wasVirtual || this._wasShow || this._wasAllShows) {
-                    this.playlistNameEl.textContent = this.currentSavedPlaylistName;
-                }
+                this.playlistLabelEl.textContent = 'Now Playing:';
+                this.playlistNameEl.textContent = `(Playlist) ${this.currentSavedPlaylistName}`;
             }
 
             this._wasVirtual = this.isVirtualPlaylist;
@@ -1311,8 +1309,8 @@ class ChromecastSlideshowController {
         this.isDirty = false;
         this.currentSavedPlaylistId = id;
         this.currentSavedPlaylistName = name;
-        this.playlistLabelEl.textContent = 'Now Playing/Up Next:';
-        this.playlistNameEl.textContent = name;
+        this.playlistLabelEl.textContent = 'Now Playing:';
+        this.playlistNameEl.textContent = `(Playlist) ${name}`;
         this.playlistDirtyEl.style.display = 'none';
         // Loading or creating a playlist leaves single-show / All Shows mode.
         this.selection = { type: 'playlist', name, path: null };
@@ -1570,9 +1568,9 @@ class ChromecastSlideshowController {
         this.skipSlideshowBtn.disabled = !isRunning;
 
         if (isPaused) {
-            this.pauseSlideshowBtn.textContent = '▶️ Resume';
+            this.pauseSlideshowBtn.textContent = '\u25B6';
         } else {
-            this.pauseSlideshowBtn.textContent = '⏸️ Pause';
+            this.pauseSlideshowBtn.textContent = '\u23F8';
         }
     }
 
@@ -1581,9 +1579,9 @@ class ChromecastSlideshowController {
 
         // Update pause button text
         if (status.paused) {
-            this.pauseSlideshowBtn.textContent = '▶️ Resume';
+            this.pauseSlideshowBtn.textContent = '\u25B6';
         } else {
-            this.pauseSlideshowBtn.textContent = '⏸️ Pause';
+            this.pauseSlideshowBtn.textContent = '\u23F8';
         }
     }
 

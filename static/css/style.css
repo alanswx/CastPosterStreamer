@@ -1303,3 +1303,34 @@ header h1 {
     .log-container { max-height: 160px; }
     #connection-status { font-size: 0.68rem; }
 }
+
+/* Transport controls: bare coloured glyphs, no button chrome */
+.icon-btn {
+    background: none;
+    border: none;
+    padding: 0 0.55rem;
+    margin: 0;
+    font-size: 2.6rem;
+    line-height: 1;
+    cursor: pointer;
+    transition: transform 0.15s ease, opacity 0.15s ease;
+}
+
+.icon-btn:hover:not(:disabled) { transform: scale(1.12); }
+.icon-btn:disabled { opacity: 0.28; cursor: not-allowed; }
+
+.icon-play  { color: #27ae60; }
+.icon-pause { color: #f39c12; }
+.icon-skip  { color: #7f8c8d; }
+.icon-stop  { color: #e74c3c; }
+
+/* Playlist action buttons: dark text on light grey reads better than
+   white-on-grey at this size */
+.playlist-actions .btn,
+.playlist-actions .btn:hover {
+    background: #e4e7eb;
+    color: #2c3e50;
+    font-weight: 500;
+}
+
+.playlist-actions .btn:hover { background: #d4dae0; }

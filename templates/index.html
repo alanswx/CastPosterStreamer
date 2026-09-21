@@ -15,18 +15,18 @@
 
         <main>
             <!-- Player controls: no panel chrome, just centred under the title -->
-            <div class="control-buttons player-buttons">
-                <button id="start-playlist" class="btn btn-success btn-sm">▶️ Play</button>
-                <button id="pause-slideshow" class="btn btn-warning btn-sm" disabled>⏸️ Pause</button>
-                <button id="skip-slideshow" class="btn btn-secondary btn-sm" disabled>⏭️ Skip</button>
-                <button id="stop-slideshow" class="btn btn-danger btn-sm" disabled>⏹️ Stop</button>
+            <div class="player-buttons">
+                <button id="start-playlist" class="icon-btn icon-play" title="Play">&#9654;</button>
+                <button id="pause-slideshow" class="icon-btn icon-pause" title="Pause" disabled>&#9208;</button>
+                <button id="skip-slideshow" class="icon-btn icon-skip" title="Skip" disabled>&#9197;</button>
+                <button id="stop-slideshow" class="icon-btn icon-stop" title="Stop" disabled>&#9209;</button>
                 <input type="checkbox" id="rotation-enabled" checked style="display:none">
             </div>
 
             <!-- Now Playing / Up Next Section (picker lives inside) -->
             <section class="panel">
                 <div class="playlist-header">
-                    <h2><span id="playlist-label">Now Playing/Up Next:</span> <span id="playlist-name">New Playlist</span><span id="playlist-dirty" class="dirty-indicator" style="display:none"> *</span></h2>
+                    <h2><span id="playlist-label">Now Playing:</span> <span id="playlist-name">New Playlist</span><span id="playlist-dirty" class="dirty-indicator" style="display:none"> *</span></h2>
                     <div class="playlist-actions">
                         <button id="load-show" class="btn btn-secondary btn-sm">Load Show</button>
                         <div class="load-playlist-wrapper">
