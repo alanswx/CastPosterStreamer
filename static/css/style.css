@@ -818,6 +818,12 @@ header h1 {
     color: #2980b9;
 }
 
+.now-playing-remaining {
+    font-size: 0.9rem;
+    color: #7f8c8d;
+    white-space: nowrap;
+}
+
 .player-row {
     display: flex;
     align-items: center;

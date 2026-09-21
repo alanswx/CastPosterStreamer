@@ -54,9 +54,7 @@ class ChromecastSlideshowController {
 
         // Status elements
         this.connectionStatusEl = document.getElementById('connection-status');
-        this.slideshowRunningEl = document.getElementById('slideshow-running');
-        this.slideshowModeEl = document.getElementById('slideshow-mode');
-        this.slideshowProgressEl = document.getElementById('slideshow-progress');
+        this.nowPlayingRemainingEl = document.getElementById('now-playing-remaining');
 
         // Log elements
         this.logContainerEl = document.getElementById('log-container');
@@ -553,7 +551,6 @@ class ChromecastSlideshowController {
             if (!response.ok) throw new Error(result.error || 'Failed to start show');
 
             this.selection = { type: 'show', name, path: showPath };
-            this.slideshowModeEl.textContent = 'Single Show';
             this.logMessage(`Playing show: ${name}`, 'success');
             this.updateNowPlaying();
             this.updateSlideshowControls(true, 'show');
@@ -602,13 +599,24 @@ class ChromecastSlideshowController {
     updateNowPlaying(playlistStatus = null) {
         if (!this.nowPlayingEl) return;
 
+        const setRemaining = (text) => {
+            if (this.nowPlayingRemainingEl) this.nowPlayingRemainingEl.textContent = text;
+        };
+
         const item = playlistStatus && playlistStatus.current_item;
         if (playlistStatus && playlistStatus.running && item) {
             const listName = playlistStatus.virtual_name
                 || (this.isVirtualPlaylist ? 'All Shows' : this.currentSavedPlaylistName);
             this.nowPlayingEl.textContent = `${listName} — ${item.directory_name}`;
+
+            const mins = Math.floor(playlistStatus.time_remaining / 60);
+            const secs = playlistStatus.time_remaining % 60;
+            const clock = `${mins}:${String(secs).padStart(2, '0')}`;
+            setRemaining(playlistStatus.paused ? `paused · ${clock} left` : `${clock} left`);
             return;
         }
+
+        setRemaining('');
         if (this.selection.type === 'show' && this.selection.name) {
             this.nowPlayingEl.textContent = `Show: ${this.selection.name}`;
             return;
@@ -629,8 +637,6 @@ class ChromecastSlideshowController {
                 throw new Error(result.error || 'Failed to start playlist');
             }
 
-            // Removed manual mode setting - rely on WebSocket update
-            // this.slideshowModeEl.textContent = 'Playlist Mode';
             this.selection = { type: 'playlist', name: this.currentSavedPlaylistName, path: null };
             this.updateNowPlaying();
             this.logMessage('Playlist started', 'success');
@@ -706,9 +712,6 @@ class ChromecastSlideshowController {
                 this.logMessage('Slideshow stopped', 'success');
             }
 
-            this.slideshowModeEl.textContent = 'None';
-            this.slideshowProgressEl.textContent = '';
-
             // Stopping hands control back to the stored playlist, which is
             // still loaded (and replaces the All Shows view if it was showing).
             this.selection = { type: 'playlist', name: this.currentSavedPlaylistName, path: null };
@@ -743,43 +746,15 @@ class ChromecastSlideshowController {
     }
 
     updateSlideshowControls(isRunning, mode = 'playlist') {
-        console.log('🎮 updateSlideshowControls called:', { isRunning, mode });
-        console.log('🎮 Button elements exist:', {
-            startPlaylist: !!this.startPlaylistBtn,
-            stop: !!this.stopSlideshowBtn,
-            statusEl: !!this.slideshowRunningEl
-        });
-
-        console.log('🎮 Updating button states - isRunning:', isRunning, 'playlistItems.length:', this.playlistItems.length);
+        // Running state is conveyed by the buttons and the Now playing line,
+        // so there is no separate status/progress display to update.
         if (this.playShowBtn) this.playShowBtn.disabled = !this.currentPath;
-        this.startPlaylistBtn.disabled = isRunning; // Force-enable for testing
+        this.startPlaylistBtn.disabled = isRunning;
         this.pauseSlideshowBtn.disabled = !isRunning;
         this.skipSlideshowBtn.disabled = !isRunning;
         this.stopSlideshowBtn.disabled = !isRunning;
-        console.log('🎮 Button states after update:', {
-            startPlaylist: this.startPlaylistBtn.disabled,
-            stop: this.stopSlideshowBtn.disabled,
-            skip: this.skipSlideshowBtn.disabled,
-            pause: this.pauseSlideshowBtn.disabled
-        });
 
-        console.log('🎮 Setting status text to:', isRunning ? 'Running' : 'Stopped');
-        console.log('🎮 slideshowRunningEl exists:', !!this.slideshowRunningEl);
-        if (this.slideshowRunningEl) {
-            this.slideshowRunningEl.textContent = isRunning ? 'Running' : 'Stopped';
-            this.slideshowRunningEl.className = isRunning ? 'status-running' : 'status-stopped';
-            this.slideshowRunningEl.style.color = isRunning ? '#27ae60' : '#e74c3c';
-        } else {
-            console.log('🎮 ERROR: slideshowRunningEl is null!');
-        }
-
-        if (!isRunning) {
-            this.slideshowModeEl.textContent = 'None';
-            this.slideshowProgressEl.textContent = '';
-        } else {
-            this.slideshowModeEl.textContent = 'Playlist Mode';
-        }
-        console.log('🎮 updateSlideshowControls completed');
+        if (!isRunning) this.updateNowPlaying();
     }
 
     updateCurrentImages(images) {
@@ -1379,22 +1354,6 @@ class ChromecastSlideshowController {
 
     updatePlaylistProgress(status) {
         this.updateNowPlaying(status);
-        if (!status.running) {
-            this.slideshowProgressEl.textContent = 'Playlist stopped';
-            this.slideshowProgressEl.className = 'progress-display stopped';
-            return;
-        }
-
-        const className = status.paused ? 'paused' : 'running';
-        this.slideshowProgressEl.className = `progress-display ${className}`;
-
-        if (status.current_item) {
-            const minutes = Math.floor(status.time_remaining / 60);
-            const seconds = status.time_remaining % 60;
-            const statusText = status.paused ? 'Paused' : 'Playing';
-            this.slideshowProgressEl.textContent =
-                `${statusText}: ${status.current_item.directory_name} - ${minutes}:${String(seconds).padStart(2, '0')} remaining`;
-        }
 
         // Update pause button text
         if (status.paused) {

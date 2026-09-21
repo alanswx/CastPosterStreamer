@@ -22,6 +22,7 @@
                 <div class="now-playing-row">
                     <span class="label">Now playing:</span>
                     <span id="now-playing" class="now-playing-value">Nothing playing</span>
+                    <span id="now-playing-remaining" class="now-playing-remaining"></span>
                 </div>
                 <div class="player-row">
                     <div class="control-buttons player-buttons">
@@ -34,17 +35,6 @@
                         <label for="slideshow-interval">Image interval (s):</label>
                         <input type="number" id="slideshow-interval" min="1" max="3600" value="5">
                         <input type="checkbox" id="rotation-enabled" checked style="display:none">
-                    </div>
-                </div>
-                <div class="slideshow-status" id="slideshow-status">
-                    <div class="status-item">
-                        <span class="label">Status:</span>
-                        <span id="slideshow-running" class="value">Stopped</span>
-                    </div>
-                    <span id="slideshow-mode" style="display:none"></span>
-                    <div class="status-item">
-                        <span class="label">Progress:</span>
-                        <div id="slideshow-progress" class="progress-display"></div>
                     </div>
                 </div>
             </section>

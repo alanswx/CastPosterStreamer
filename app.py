@@ -640,6 +640,10 @@ def pause_playlist():
     try:
         slideshow_controller.toggle_playlist_pause()
         socketio.emit('playlist_paused')
+        # Push the new state too, so the Pause/Resume label and the "paused"
+        # marker on the Now playing line update immediately rather than
+        # waiting for the next periodic status push.
+        socketio.emit('playlist_status_update', slideshow_controller.get_playlist_status())
         return jsonify({'status': 'success'})
     except Exception as e:
         logger.error(f"Error pausing playlist: {e}")
