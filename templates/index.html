@@ -15,11 +15,23 @@
 
         <main>
             <!-- Player controls: no panel chrome, just centred under the title -->
+            <!-- Inline SVG rather than unicode glyphs: ⏸ ⏭ ⏹ default to emoji
+                 presentation, which iOS renders in fixed colours and ignores
+                 CSS `color` on. SVG with currentColor behaves everywhere. -->
             <div class="player-buttons">
-                <button id="start-playlist" class="icon-btn icon-play" title="Play">&#9654;</button>
-                <button id="pause-slideshow" class="icon-btn icon-pause" title="Pause" disabled>&#9208;</button>
-                <button id="skip-slideshow" class="icon-btn icon-skip" title="Skip" disabled>&#9197;</button>
-                <button id="stop-slideshow" class="icon-btn icon-stop" title="Stop" disabled>&#9209;</button>
+                <button id="start-playlist" class="icon-btn icon-play" title="Play">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+                </button>
+                <button id="pause-slideshow" class="icon-btn icon-pause" title="Pause" disabled>
+                    <svg class="ic-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>
+                    <svg class="ic-resume" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+                </button>
+                <button id="skip-slideshow" class="icon-btn icon-skip" title="Skip" disabled>
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14l9-7zm11 0h3v14h-3z"/></svg>
+                </button>
+                <button id="stop-slideshow" class="icon-btn icon-stop" title="Stop" disabled>
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6h12v12H6z"/></svg>
+                </button>
                 <input type="checkbox" id="rotation-enabled" checked style="display:none">
             </div>
 

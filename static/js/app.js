@@ -1568,9 +1568,9 @@ class ChromecastSlideshowController {
         this.skipSlideshowBtn.disabled = !isRunning;
 
         if (isPaused) {
-            this.pauseSlideshowBtn.textContent = '\u25B6';
+            this.pauseSlideshowBtn.classList.add('is-paused');
         } else {
-            this.pauseSlideshowBtn.textContent = '\u23F8';
+            this.pauseSlideshowBtn.classList.remove('is-paused');
         }
     }
 
@@ -1579,9 +1579,9 @@ class ChromecastSlideshowController {
 
         // Update pause button text
         if (status.paused) {
-            this.pauseSlideshowBtn.textContent = '\u25B6';
+            this.pauseSlideshowBtn.classList.add('is-paused');
         } else {
-            this.pauseSlideshowBtn.textContent = '\u23F8';
+            this.pauseSlideshowBtn.classList.remove('is-paused');
         }
     }
 

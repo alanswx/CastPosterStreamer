@@ -1135,6 +1135,49 @@ header h1 {
     padding: 0.2rem 0.6rem;
     font-size: 0.8rem;
 }
+
+/* Transport controls: bare coloured glyphs, no button chrome */
+.icon-btn {
+    background: none;
+    border: none;
+    padding: 0 0.55rem;
+    margin: 0;
+    line-height: 0;
+    cursor: pointer;
+    transition: transform 0.15s ease, opacity 0.15s ease;
+}
+
+.icon-btn svg {
+    width: 42px;
+    height: 42px;
+    fill: currentColor;
+    display: block;
+}
+
+/* Pause swaps to a resume arrow while paused */
+.icon-pause .ic-resume { display: none; }
+.icon-pause.is-paused .ic-pause { display: none; }
+.icon-pause.is-paused .ic-resume { display: block; }
+
+.icon-btn:hover:not(:disabled) { transform: scale(1.12); }
+.icon-btn:disabled { opacity: 0.28; cursor: not-allowed; }
+
+.icon-play  { color: #27ae60; }
+.icon-pause { color: #f39c12; }
+.icon-skip  { color: #7f8c8d; }
+.icon-stop  { color: #e74c3c; }
+
+/* Playlist action buttons: dark text on light grey reads better than
+   white-on-grey at this size */
+.playlist-actions .btn,
+.playlist-actions .btn:hover {
+    background: #e4e7eb;
+    color: #2c3e50;
+    font-weight: 500;
+}
+
+.playlist-actions .btn:hover { background: #d4dae0; }
+
 /* ---------------------------------------------------------------------------
    Small screens (phones)
 
@@ -1166,25 +1209,21 @@ header h1 {
     }
 
     /* The desktop .btn margins fight gap-based layouts on narrow screens */
-    .player-buttons .btn,
     .playlist-actions .btn,
     .control-buttons .btn {
         margin: 0;
     }
 
-    /* Transport: one even row of four thumb-sized targets */
+    /* Transport: four evenly spaced icons, sized for thumbs */
     .player-buttons {
-        display: grid;
-        grid-template-columns: repeat(4, 1fr);
-        gap: 0.35rem;
+        display: flex;
+        justify-content: space-evenly;
+        gap: 0.2rem;
         margin-bottom: 0.9rem;
     }
 
-    .player-buttons .btn {
-        padding: 0.6rem 0.2rem;
-        font-size: 0.8rem;
-        white-space: nowrap;
-    }
+    .icon-btn { padding: 0.2rem 0.4rem; }
+    .icon-btn svg { width: 38px; height: 38px; }
 
     /* Heading stacks above its controls, which sit in an even 2x2 grid */
     .playlist-header {
@@ -1303,34 +1342,3 @@ header h1 {
     .log-container { max-height: 160px; }
     #connection-status { font-size: 0.68rem; }
 }
-
-/* Transport controls: bare coloured glyphs, no button chrome */
-.icon-btn {
-    background: none;
-    border: none;
-    padding: 0 0.55rem;
-    margin: 0;
-    font-size: 2.6rem;
-    line-height: 1;
-    cursor: pointer;
-    transition: transform 0.15s ease, opacity 0.15s ease;
-}
-
-.icon-btn:hover:not(:disabled) { transform: scale(1.12); }
-.icon-btn:disabled { opacity: 0.28; cursor: not-allowed; }
-
-.icon-play  { color: #27ae60; }
-.icon-pause { color: #f39c12; }
-.icon-skip  { color: #7f8c8d; }
-.icon-stop  { color: #e74c3c; }
-
-/* Playlist action buttons: dark text on light grey reads better than
-   white-on-grey at this size */
-.playlist-actions .btn,
-.playlist-actions .btn:hover {
-    background: #e4e7eb;
-    color: #2c3e50;
-    font-weight: 500;
-}
-
-.playlist-actions .btn:hover { background: #d4dae0; }
