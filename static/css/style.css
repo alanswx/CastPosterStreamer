@@ -640,12 +640,6 @@ header h1 {
     color: #2c3e50;
 }
 
-.playlist-item-path {
-    font-size: 0.8rem;
-    color: #7f8c8d;
-    font-family: monospace;
-}
-
 .playlist-item-duration {
     margin-left: 1rem;
     display: flex;
@@ -807,53 +801,33 @@ header h1 {
     font-size: 0.9rem;
 }
 
-/* Player panel: transport buttons only */
-.now-playing-remaining {
-    font-size: 0.9rem;
-    color: #7f8c8d;
+/* "Now Playing" marker on the playing row */
+.now-playing-badge {
+    display: inline-block;
+    /* The row's info column is a stretch flexbox, so pin the badge to its
+       own width rather than letting it span the whole row. */
+    align-self: flex-start;
+    width: fit-content;
+    margin-top: 0.15rem;
+    padding: 0.05rem 0.45rem;
+    border-radius: 3px;
+    background: #27ae60;
+    color: #fff;
+    font-size: 0.72rem;
+    font-weight: 600;
     white-space: nowrap;
-}
-
-/* Current Show panel */
-.current-show-row {
-    display: flex;
-    align-items: center;
-    gap: 0.9rem;
-}
-
-.current-show-thumb {
-    flex: 0 0 auto;
-    width: 56px;
-    height: 56px;
-    border-radius: 4px;
-    overflow: hidden;
-    background: #f4f6f8;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.current-show-thumb img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-}
-
-.current-show-text h2 {
-    margin: 0;
-    border-bottom: none;
-    padding-bottom: 0;
 }
 
 .settings-interval {
     margin-bottom: 1rem;
 }
 
-/* Transport buttons: sized to content rather than stretched full width */
+/* Transport buttons: sized to content, centred in the panel */
 .player-buttons {
     display: flex;
     gap: 0.5rem;
     flex-wrap: wrap;
+    justify-content: center;
 }
 
 .player-buttons .btn {
@@ -907,13 +881,6 @@ header h1 {
     overflow-y: auto;
 }
 
-/* Extend button, while holding the current show */
-.btn.extend-active,
-.btn.extend-active:hover {
-    background: #16a085;
-    color: #fff;
-}
-
 /* Playlist rows whose folder is missing */
 .playlist-item.item-broken {
     background: #fff5f5;
@@ -924,9 +891,6 @@ header h1 {
     color: #c0392b;
 }
 
-.playlist-item.item-broken .playlist-item-path {
-    color: #e74c3c;
-}
 
 .item-broken-badge {
     display: inline-block;

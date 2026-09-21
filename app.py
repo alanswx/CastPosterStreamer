@@ -671,18 +671,6 @@ def play_show():
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/playlist/extend', methods=['POST'])
-def extend_playlist_item():
-    """Toggle holding the current show indefinitely."""
-    try:
-        extended = slideshow_controller.toggle_extend()
-        socketio.emit('playlist_status_update', slideshow_controller.get_playlist_status())
-        return jsonify({'extended': extended})
-    except Exception as e:
-        logger.error(f"Error toggling extend: {e}")
-        return jsonify({'error': str(e)}), 500
-
-
 @app.route('/api/playlist/skip', methods=['POST'])
 def skip_playlist():
     """Skip to next item in playlist."""

@@ -54,10 +54,6 @@ class SlideshowController:
         self.virtual_items = None
         self.virtual_name = None
 
-        # Extend: hold the current show indefinitely by suppressing the
-        # duration-based advance. Cleared by skip/stop/starting something new.
-        self.extend_current = False
-
         # Use gevent lock if available, otherwise regular threading lock
         if GEVENT_AVAILABLE:
             self._lock = gevent.lock.BoundedSemaphore()
@@ -454,7 +450,6 @@ class SlideshowController:
             self.virtual_name = name if items is not None else None
             self.is_playlist_running = True
             self.is_playlist_paused = False
-            self.extend_current = False
             self.current_playlist_index = 0
             self.playlist_start_time = time.time()
             self.playlist_pause_time = None
@@ -474,7 +469,6 @@ class SlideshowController:
             self.is_playlist_running = False
             self.is_playlist_paused = False
             self.skip_requested = False
-            self.extend_current = False
             # Leaving virtual mode: the stored playlist becomes current again.
             self.virtual_items = None
             self.virtual_name = None
@@ -593,12 +587,10 @@ class SlideshowController:
                     elapsed_time = (current_time - item_start_time) + item_accumulated_time
                     since_last_send = current_time - last_image_time
 
-                    duration_reached = elapsed_time >= duration_minutes * 60
-                    if (duration_reached and not self.extend_current) or self.skip_requested:
+                    if elapsed_time >= duration_minutes * 60 or self.skip_requested:
                         if self.skip_requested:
                             self.logger.info("Skip requested, breaking inner loop.")
                             self.skip_requested = False
-                            self.extend_current = False
                         else:
                             self.logger.info(f"Duration elapsed for {current_item['directory_name']}, moving on.")
                         break
@@ -717,13 +709,6 @@ class SlideshowController:
             return {'success': True}
         return {'success': False, 'error': f'Could not start show: {directory}'}
 
-    def toggle_extend(self) -> bool:
-        """Toggle holding the current show indefinitely. Returns the new state."""
-        with self._lock:
-            self.extend_current = not self.extend_current
-        self.logger.info(f"Extend {'enabled' if self.extend_current else 'cleared'}")
-        return self.extend_current
-
     def _active_items(self) -> List[Dict[str, Any]]:
         """Items currently being played: the virtual list if one is active,
         otherwise the stored playlist (re-read so live edits take effect)."""
@@ -742,8 +727,7 @@ class SlideshowController:
                 'current_item': None,
                 'time_remaining': 0,
                 'total_items': 0,
-                'virtual_name': None,
-                'extended': False
+                'virtual_name': None
             }
 
         valid_items = self._active_items()
@@ -781,6 +765,5 @@ class SlideshowController:
             'current_index': self.current_playlist_index,
             'time_remaining': int(time_remaining),
             'total_items': len(valid_items),
-            'virtual_name': self.virtual_name,
-            'extended': self.extend_current
+            'virtual_name': self.virtual_name
         }

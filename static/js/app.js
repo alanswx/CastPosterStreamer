@@ -40,9 +40,6 @@ class ChromecastSlideshowController {
         this.pauseSlideshowBtn = document.getElementById('pause-slideshow');
         this.skipSlideshowBtn = document.getElementById('skip-slideshow');
         this.stopSlideshowBtn = document.getElementById('stop-slideshow');
-        this.nowPlayingEl = document.getElementById('current-show-name');
-        this.currentShowThumbEl = document.getElementById('current-show-thumb');
-        this.extendSlideshowBtn = document.getElementById('extend-slideshow');
         this.playAllShowsBtn = document.getElementById('play-all-shows');
 
         // Playlist / show picker
@@ -59,12 +56,10 @@ class ChromecastSlideshowController {
         this.selection = { type: 'playlist', name: null, path: null };
         this.isVirtualPlaylist = false;
         this._wasVirtual = false;
-        this.isExtended = false;
         this.showPlaying = false;       // a single show (not a playlist) is casting
 
         // Status elements
         this.connectionStatusEl = document.getElementById('connection-status');
-        this.nowPlayingRemainingEl = document.getElementById('now-playing-remaining');
 
         // Log elements
         this.logContainerEl = document.getElementById('log-container');
@@ -111,7 +106,6 @@ class ChromecastSlideshowController {
         this.rotationEnabledEl.addEventListener('change', () => this.saveSettings());
         this.startPlaylistBtn.addEventListener('click', () => this.playSelected());
         this.pauseSlideshowBtn.addEventListener('click', () => this.pauseSlideshow());
-        this.extendSlideshowBtn.addEventListener('click', () => this.toggleExtend());
         this.skipSlideshowBtn.addEventListener('click', () => this.skipSlideshow());
         this.stopSlideshowBtn.addEventListener('click', () => this.stopSlideshow());
 
@@ -620,47 +614,12 @@ class ChromecastSlideshowController {
             this.showPlaying = true;
             this.logMessage(`Playing show: ${name}`, 'success');
             this.updateNowPlaying();
-            // isRunning=false: the *playlist* isn't running, so Pause/Skip/
-            // Extend stay off. showPlaying keeps Stop live.
+            // isRunning=false: the *playlist* isn't running, so Pause/Skip
+            // stay off. showPlaying keeps Stop live.
             this.updateSlideshowControls(false, 'show');
         } catch (error) {
             this.logMessage(`Error playing show: ${error.message}`, 'error');
         }
-    }
-
-    /** Hold the current show indefinitely (toggle). */
-    async toggleExtend() {
-        if (this.showPlaying) {
-            this.logMessage('This show is already playing with no time limit — Stop or load something else to change it', 'info');
-            return;
-        }
-        try {
-            const response = await fetch('/api/playlist/extend', { method: 'POST' });
-            const result = await response.json();
-            if (!response.ok) throw new Error(result.error || 'Failed to toggle extend');
-
-            this.isExtended = !!result.extended;
-            this.logMessage(
-                this.isExtended
-                    ? 'Extended — this show will keep playing until you skip, stop, or start something else'
-                    : 'Extend cleared — normal timing resumed',
-                'success'
-            );
-            this.updateExtendButton();
-        } catch (error) {
-            this.logMessage(`Error toggling extend: ${error.message}`, 'error');
-        }
-    }
-
-    updateExtendButton() {
-        if (!this.extendSlideshowBtn) return;
-        // A single show has no duration to run out, so it is always extended.
-        const indefinite = this.isExtended || this.showPlaying;
-        this.extendSlideshowBtn.textContent = indefinite ? '♾️ Extended' : '♾️ Extend';
-        this.extendSlideshowBtn.classList.toggle('extend-active', indefinite);
-        this.extendSlideshowBtn.title = this.showPlaying
-            ? 'A single show plays until you stop it — already unlimited'
-            : 'Hold this show indefinitely';
     }
 
     /**
@@ -737,70 +696,43 @@ class ChromecastSlideshowController {
     }
 
     /** Reflect the selection (and, while running, what's actually playing). */
+    /**
+     * Mark the playing row in the list with a "Now Playing" label and the
+     * time left, and clear it from every other row. There is no separate
+     * current-show panel — the list itself shows what's on.
+     */
     updateNowPlaying(playlistStatus = null) {
-        if (!this.nowPlayingEl) return;
-
-        const setRemaining = (text) => {
-            if (this.nowPlayingRemainingEl) this.nowPlayingRemainingEl.textContent = text;
-        };
+        const rows = this.playlistListEl
+            ? this.playlistListEl.querySelectorAll('.playlist-item')
+            : [];
+        if (!rows.length) return;
 
         const item = playlistStatus && playlistStatus.current_item;
+        let playingRow = null;
+        let label = '';
+
         if (playlistStatus && playlistStatus.running && item) {
-            this.nowPlayingEl.textContent = item.directory_name;
-            this.setCurrentShowThumbnail(item.directory_path);
+            playingRow = this.playlistListEl.querySelector(`[data-item-id="${item.id}"]`);
+            const mins = Math.floor(playlistStatus.time_remaining / 60);
+            const secs = playlistStatus.time_remaining % 60;
+            const clock = `${mins}:${String(secs).padStart(2, '0')} left`;
+            label = playlistStatus.paused ? `Now Playing · paused · ${clock}` : `Now Playing · ${clock}`;
+        } else if (this.showPlaying) {
+            // A single loaded show is the only row in the list.
+            playingRow = rows[0];
+            label = 'Now Playing';
+        }
 
-            if (playlistStatus.extended) {
-                setRemaining(playlistStatus.paused ? 'paused · extended' : 'extended — no time limit');
+        rows.forEach(row => {
+            const badge = row.querySelector('.now-playing-badge');
+            if (!badge) return;
+            if (row === playingRow) {
+                badge.textContent = label;
+                badge.style.display = '';
             } else {
-                const mins = Math.floor(playlistStatus.time_remaining / 60);
-                const secs = playlistStatus.time_remaining % 60;
-                const clock = `${mins}:${String(secs).padStart(2, '0')}`;
-                setRemaining(playlistStatus.paused ? `paused · ${clock} left` : `${clock} left`);
+                badge.style.display = 'none';
             }
-            return;
-        }
-
-        if (this.showPlaying && this.selection.name) {
-            this.nowPlayingEl.textContent = this.selection.name;
-            this.setCurrentShowThumbnail(this.selection.path);
-            setRemaining('extended — no time limit');
-            return;
-        }
-
-        // Nothing is playing: Current Show reflects that, and Up Next below
-        // shows what's queued.
-        setRemaining('');
-        this.nowPlayingEl.textContent = 'Nothing playing';
-        this.setCurrentShowThumbnail(null);
-    }
-
-    /** One thumbnail for the show currently on the screens. */
-    async setCurrentShowThumbnail(directoryPath) {
-        if (!this.currentShowThumbEl) return;
-
-        if (!directoryPath) {
-            this.currentShowThumbEl.removeAttribute('src');
-            this.currentShowThumbEl.style.visibility = 'hidden';
-            this._thumbDir = null;
-            return;
-        }
-        if (this._thumbDir === directoryPath) return;   // already showing it
-        this._thumbDir = directoryPath;
-
-        try {
-            const response = await fetch(`/api/directory-images?path=${encodeURIComponent(directoryPath)}`);
-            const data = await response.json();
-            const first = data.images && data.images[0];
-            if (!first) {
-                this.currentShowThumbEl.style.visibility = 'hidden';
-                return;
-            }
-            this.currentShowThumbEl.src =
-                `/api/thumbnails/${first.name}?dir=${encodeURIComponent(directoryPath)}`;
-            this.currentShowThumbEl.style.visibility = 'visible';
-        } catch (error) {
-            this.currentShowThumbEl.style.visibility = 'hidden';
-        }
+        });
     }
 
     async startPlaylistSlideshow() {
@@ -892,8 +824,6 @@ class ChromecastSlideshowController {
             // same way Load Playlist / Load Show leave things. (An All Shows
             // run ends, so the stored playlist reappears via loadPlaylist.)
             this.showPlaying = false;
-            this.isExtended = false;
-            this.updateExtendButton();
             await this.loadPlaylist();
             this.updateNowPlaying();
 
@@ -936,10 +866,6 @@ class ChromecastSlideshowController {
         // Pause/Skip act on playlist timing, which a single show has none of.
         this.pauseSlideshowBtn.disabled = !isRunning;
         this.skipSlideshowBtn.disabled = !isRunning;
-        // Extend applies to whatever is playing. A single show already runs
-        // until stopped, so it shows as extended while one is casting.
-        this.extendSlideshowBtn.disabled = !playing;
-        this.updateExtendButton();
 
         if (!playing) this.updateNowPlaying();
     }
@@ -1150,7 +1076,7 @@ class ChromecastSlideshowController {
 
             if (this.isVirtualPlaylist) {
                 this.playlistItems = data.items || [];
-                this.playlistLabelEl.textContent = 'Up Next:';
+                this.playlistLabelEl.textContent = 'Now Playing/Up Next:';
                 this.playlistNameEl.textContent = data.virtual_name || 'All Shows';
                 this.playlistDirtyEl.style.display = 'none';
             } else if (this.selection.type === 'show' && this.selection.path) {
@@ -1162,12 +1088,12 @@ class ChromecastSlideshowController {
                     duration_minutes: null,
                     is_valid: 1
                 }];
-                this.playlistLabelEl.textContent = 'Up Next:';
+                this.playlistLabelEl.textContent = 'Now Playing/Up Next:';
                 this.playlistNameEl.textContent = this.selection.name;
                 this.playlistDirtyEl.style.display = 'none';
             } else {
                 this.playlistItems = data.items || [];
-                this.playlistLabelEl.textContent = 'Up Next:';
+                this.playlistLabelEl.textContent = 'Now Playing/Up Next:';
                 if (this._wasVirtual || this._wasShow) {
                     this.playlistNameEl.textContent = this.currentSavedPlaylistName;
                 }
@@ -1248,7 +1174,7 @@ class ChromecastSlideshowController {
             </div>
             <div class="playlist-item-info">
                 <div class="playlist-item-name">${item.directory_name}${brokenBadge}</div>
-                <div class="playlist-item-path">${item.directory_path}</div>
+                <span class="now-playing-badge" style="display:none"></span>
             </div>
             ${durationCell}
             ${actionsCell}
@@ -1339,7 +1265,7 @@ class ChromecastSlideshowController {
         this.isDirty = false;
         this.currentSavedPlaylistId = id;
         this.currentSavedPlaylistName = name;
-        this.playlistLabelEl.textContent = 'Up Next:';
+        this.playlistLabelEl.textContent = 'Now Playing/Up Next:';
         this.playlistNameEl.textContent = name;
         this.playlistDirtyEl.style.display = 'none';
         // Loading or creating a playlist leaves single-show mode.
@@ -1583,7 +1509,6 @@ class ChromecastSlideshowController {
         this.startPlaylistBtn.disabled = false;
         this.pauseSlideshowBtn.disabled = !isRunning;
         this.skipSlideshowBtn.disabled = !isRunning;
-        this.extendSlideshowBtn.disabled = !isRunning;
 
         if (isPaused) {
             this.pauseSlideshowBtn.textContent = '▶️ Resume';
@@ -1594,13 +1519,6 @@ class ChromecastSlideshowController {
 
     updatePlaylistProgress(status) {
         this.updateNowPlaying(status);
-
-        // Keep the Extend button in sync with the server (it clears itself on
-        // skip/stop/new playlist, which the UI doesn't initiate).
-        if (typeof status.extended === 'boolean' && status.extended !== this.isExtended) {
-            this.isExtended = status.extended;
-            this.updateExtendButton();
-        }
 
         // Update pause button text
         if (status.paused) {
