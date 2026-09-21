@@ -650,6 +650,39 @@ def pause_playlist():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/show/play', methods=['POST'])
+def play_show():
+    """Switch to a single show as one atomic server-side operation."""
+    data = request.get_json() or {}
+    path = data.get('path')
+    if not path:
+        return jsonify({'error': 'path is required'}), 400
+
+    try:
+        result = slideshow_controller.play_single_show(path)
+        socketio.emit('playlist_stopped')
+        socketio.emit('playlist_status_update', slideshow_controller.get_playlist_status())
+        if not result.get('success'):
+            return jsonify({'error': result.get('error', 'Failed to start show')}), 400
+        logger.info(f"Playing single show: {path}")
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logger.error(f"Error playing show: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/playlist/extend', methods=['POST'])
+def extend_playlist_item():
+    """Toggle holding the current show indefinitely."""
+    try:
+        extended = slideshow_controller.toggle_extend()
+        socketio.emit('playlist_status_update', slideshow_controller.get_playlist_status())
+        return jsonify({'extended': extended})
+    except Exception as e:
+        logger.error(f"Error toggling extend: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/playlist/skip', methods=['POST'])
 def skip_playlist():
     """Skip to next item in playlist."""

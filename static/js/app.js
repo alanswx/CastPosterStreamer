@@ -24,7 +24,6 @@ class ChromecastSlideshowController {
         this.currentPathEl = document.getElementById('current-path');
         this.directoryListEl = document.getElementById('directory-list');
         this.directoryThumbnailsEl = document.getElementById('directory-thumbnails');
-        this.addDirectoryToPlaylistBtn = document.getElementById('add-directory-to-playlist');
 
         // Selected directory tracking (for backend compatibility)
         this.selectedDirectory = '';
@@ -41,16 +40,27 @@ class ChromecastSlideshowController {
         this.pauseSlideshowBtn = document.getElementById('pause-slideshow');
         this.skipSlideshowBtn = document.getElementById('skip-slideshow');
         this.stopSlideshowBtn = document.getElementById('stop-slideshow');
-        this.nowPlayingEl = document.getElementById('now-playing');
-        this.browseSlideshowsBtn = document.getElementById('browse-slideshows');
-        this.playShowBtn = document.getElementById('play-show');
+        this.nowPlayingEl = document.getElementById('current-show-name');
+        this.currentShowThumbEl = document.getElementById('current-show-thumb');
+        this.extendSlideshowBtn = document.getElementById('extend-slideshow');
         this.playAllShowsBtn = document.getElementById('play-all-shows');
-        this.libraryFolderEl = document.getElementById('library-folder');
 
-        // What the Play button will start: the playlist, or a single browsed show.
+        // Playlist / show picker
+        this.playlistLabelEl = document.getElementById('playlist-label');
+        this.loadShowBtn = document.getElementById('load-show');
+        this.addShowBtn = document.getElementById('add-show');
+        this.showPickerEl = document.getElementById('show-picker');
+        this.pickerTitleEl = document.getElementById('picker-title');
+        this.pickerConfirmBtn = document.getElementById('picker-confirm');
+        this.pickerCloseBtn = document.getElementById('picker-close');
+        this.pickerMode = null;          // 'load' | 'add' while the picker is open
+
+        // What the Play button will start: the playlist, or a single loaded show.
         this.selection = { type: 'playlist', name: null, path: null };
         this.isVirtualPlaylist = false;
         this._wasVirtual = false;
+        this.isExtended = false;
+        this.showPlaying = false;       // a single show (not a playlist) is casting
 
         // Status elements
         this.connectionStatusEl = document.getElementById('connection-status');
@@ -65,7 +75,6 @@ class ChromecastSlideshowController {
         this.playlistListEl = document.getElementById('playlist-list');
         this.playlistNameEl = document.getElementById('playlist-name');
         this.playlistDirtyEl = document.getElementById('playlist-dirty');
-        this.createPlaylistBtn = document.getElementById('create-playlist');
         this.savePlaylistBtn = document.getElementById('save-playlist');
         this.loadPlaylistBtn = document.getElementById('load-playlist');
         this.loadPlaylistDropdown = document.getElementById('load-playlist-dropdown');
@@ -92,8 +101,6 @@ class ChromecastSlideshowController {
     }
 
     setupEventListeners() {
-        // Directory browser events
-        this.addDirectoryToPlaylistBtn.addEventListener('click', () => this.addCurrentDirectoryToPlaylist());
 
 
         // Device events
@@ -104,21 +111,22 @@ class ChromecastSlideshowController {
         this.rotationEnabledEl.addEventListener('change', () => this.saveSettings());
         this.startPlaylistBtn.addEventListener('click', () => this.playSelected());
         this.pauseSlideshowBtn.addEventListener('click', () => this.pauseSlideshow());
+        this.extendSlideshowBtn.addEventListener('click', () => this.toggleExtend());
         this.skipSlideshowBtn.addEventListener('click', () => this.skipSlideshow());
         this.stopSlideshowBtn.addEventListener('click', () => this.stopSlideshow());
 
-        // Browse / show events
-        this.browseSlideshowsBtn.addEventListener('click', () => this.browseLibrary());
-        this.playShowBtn.addEventListener('click', () => this.playShow());
+        // Picker / playlist events
+        this.loadShowBtn.addEventListener('click', () => this.openPicker('load'));
+        this.addShowBtn.addEventListener('click', () => this.openPicker('add'));
+        this.pickerConfirmBtn.addEventListener('click', () => this.confirmPicker());
+        this.pickerCloseBtn.addEventListener('click', () => this.closePicker());
         this.playAllShowsBtn.addEventListener('click', () => this.playAllShows());
-        this.libraryFolderEl.addEventListener('change', () => this.saveLibraryFolder());
 
         // Log events
         this.clearLogBtn.addEventListener('click', () => this.clearLog());
         document.getElementById('test-websocket').addEventListener('click', () => this.testWebSocket());
 
         // Playlist events
-        this.createPlaylistBtn.addEventListener('click', () => this.createPlaylist());
         this.savePlaylistBtn.addEventListener('click', () => this.savePlaylist());
         this.loadPlaylistBtn.addEventListener('click', (e) => { e.stopPropagation(); this.toggleLoadDropdown(); });
         this.savePlaylistConfirmBtn.addEventListener('click', () => this.confirmSavePlaylist());
@@ -141,6 +149,46 @@ class ChromecastSlideshowController {
                 this.socket.connect();
             }
         });
+
+        this.startStaleConnectionWatchdog();
+    }
+
+    /**
+     * The socket can go stale while still reporting connected — the server
+     * stops receiving from it, so status events never arrive and the page sits
+     * frozen behind a green "Connected" badge. Nothing detects that, because
+     * socket.io believes it is fine. If something should be playing and we
+     * have heard nothing for a while, force a reconnect.
+     */
+    startStaleConnectionWatchdog() {
+        const STALE_MS = 30000;
+        this._lastEventAt = Date.now();
+
+        setInterval(async () => {
+            if (document.hidden) return;
+            if (Date.now() - this._lastEventAt < STALE_MS) return;
+
+            // Only act if the server says something is playing — an idle app
+            // legitimately emits nothing.
+            try {
+                const status = await (await fetch('/api/playlist/status')).json();
+                if (!status.running && !this.showPlaying) {
+                    this._lastEventAt = Date.now();
+                    return;
+                }
+            } catch (e) {
+                return;     // server unreachable; nothing useful to do here
+            }
+
+            this.logMessage('Connection went quiet — reconnecting…', 'info');
+            this._lastEventAt = Date.now();
+            try {
+                this.socket.disconnect();
+                this.socket.connect();
+            } catch (e) {
+                console.error('Reconnect failed', e);
+            }
+        }, 10000);
     }
 
     setupSocketEventListeners() {
@@ -224,6 +272,8 @@ class ChromecastSlideshowController {
             // Status will be updated via playlist_status_update WebSocket message
         });
 
+        this.socket.onAny(() => { this._lastEventAt = Date.now(); });
+
         this.socket.on('playlist_status_update', (status) => {
             // Ensure status is an object if received as string
             if (typeof status === 'string') {
@@ -285,8 +335,14 @@ class ChromecastSlideshowController {
                 // selectedDirectoryEl removed from UI - no longer needed
             }
 
-            if (this.libraryFolderEl) {
-                this.libraryFolderEl.value = settings.library_directory || '';
+            // A single loaded show survives a reload.
+            if (settings.loaded_kind === 'show' && settings.selected_directory) {
+                const p = settings.selected_directory;
+                this.selection = {
+                    type: 'show',
+                    name: p.split('/').filter(Boolean).pop() || p,
+                    path: p
+                };
             }
 
             if (settings.current_playlist_name) {
@@ -327,8 +383,8 @@ class ChromecastSlideshowController {
             this.currentPathEl.textContent = data.current_path;
             this.updateDirectoryList(data.items || []);
 
-            this.addDirectoryToPlaylistBtn.disabled = false;
-            if (this.playShowBtn) this.playShowBtn.disabled = false;
+            // You can only "use" a folder once you've navigated into one.
+            if (this.pickerConfirmBtn) this.pickerConfirmBtn.disabled = !this.currentPath;
 
             // Load directory thumbnails
             this.loadDirectoryThumbnails(data.current_path);
@@ -517,13 +573,29 @@ class ChromecastSlideshowController {
         this.socket.emit('test_websocket');
     }
 
-    /** Play button: start whatever is currently selected. */
+    /**
+     * Play button: start whatever is loaded, replacing whatever is running.
+     * Play stays available while something else plays, so loading a show and
+     * pressing Play works without stopping the playlist by hand first.
+     */
     async playSelected() {
         if (this.selection.type === 'show' && this.selection.path) {
-            await this.playShow(this.selection.path);
-        } else {
-            await this.startPlaylistSlideshow();
+            await this.playShow(this.selection.path);   // stops the playlist first
+            return;
         }
+
+        // Playlist mode: clear a single show if one is casting.
+        if (this.showPlaying) {
+            await fetch('/api/slideshow/stop', { method: 'POST' });
+            this.showPlaying = false;
+        }
+
+        const status = await (await fetch('/api/playlist/status')).json();
+        if (status.running) {
+            this.logMessage('That playlist is already playing', 'info');
+            return;
+        }
+        await this.startPlaylistSlideshow();
     }
 
     /**
@@ -540,23 +612,63 @@ class ChromecastSlideshowController {
         const name = showPath.split('/').filter(Boolean).pop() || showPath;
 
         try {
-            await fetch('/api/playlist/stop', { method: 'POST' });
-            await fetch('/api/slideshow/stop', { method: 'POST' });
-
-            await this.saveSettings({ selected_directory: showPath });
-            this.selectedDirectory = showPath;
-
-            const response = await fetch('/api/slideshow/start', { method: 'POST' });
+            // One atomic call: stopping and starting separately left a gap
+            // wide enough for the scheduler (or another tab) to slip in.
+            const response = await fetch('/api/show/play', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: showPath })
+            });
             const result = await response.json();
             if (!response.ok) throw new Error(result.error || 'Failed to start show');
 
+            this.selectedDirectory = showPath;
+
             this.selection = { type: 'show', name, path: showPath };
+            this.showPlaying = true;
             this.logMessage(`Playing show: ${name}`, 'success');
             this.updateNowPlaying();
-            this.updateSlideshowControls(true, 'show');
+            // isRunning=false: the *playlist* isn't running, so Pause/Skip/
+            // Extend stay off. showPlaying keeps Stop live.
+            this.updateSlideshowControls(false, 'show');
         } catch (error) {
             this.logMessage(`Error playing show: ${error.message}`, 'error');
         }
+    }
+
+    /** Hold the current show indefinitely (toggle). */
+    async toggleExtend() {
+        if (this.showPlaying) {
+            this.logMessage('This show is already playing with no time limit — Stop or load something else to change it', 'info');
+            return;
+        }
+        try {
+            const response = await fetch('/api/playlist/extend', { method: 'POST' });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error || 'Failed to toggle extend');
+
+            this.isExtended = !!result.extended;
+            this.logMessage(
+                this.isExtended
+                    ? 'Extended — this show will keep playing until you skip, stop, or start something else'
+                    : 'Extend cleared — normal timing resumed',
+                'success'
+            );
+            this.updateExtendButton();
+        } catch (error) {
+            this.logMessage(`Error toggling extend: ${error.message}`, 'error');
+        }
+    }
+
+    updateExtendButton() {
+        if (!this.extendSlideshowBtn) return;
+        // A single show has no duration to run out, so it is always extended.
+        const indefinite = this.isExtended || this.showPlaying;
+        this.extendSlideshowBtn.textContent = indefinite ? '♾️ Extended' : '♾️ Extend';
+        this.extendSlideshowBtn.classList.toggle('extend-active', indefinite);
+        this.extendSlideshowBtn.title = this.showPlaying
+            ? 'A single show plays until you stop it — already unlimited'
+            : 'Hold this show indefinitely';
     }
 
     /**
@@ -584,15 +696,52 @@ class ChromecastSlideshowController {
         }
     }
 
-    /** Browse Slideshows: always open the configured library folder. */
-    async browseLibrary() {
-        await this.browseDirectory(this.libraryFolderEl.value || null);
+    // --- Show picker (collapsible, shared by Load Show and Add Show) ---
+
+    /** Open the picker at the library folder. mode: 'load' | 'add'. */
+    async openPicker(mode) {
+        this.pickerMode = mode;
+        this.pickerTitleEl.textContent = mode === 'load' ? 'Load a show' : 'Add a show to the playlist';
+        this.pickerConfirmBtn.textContent = mode === 'load' ? 'Load this show' : 'Add to playlist';
+        this.pickerConfirmBtn.disabled = true;
+        this.showPickerEl.style.display = '';
+        this.directoryThumbnailsEl.innerHTML = '<div class="no-preview">Browse to a folder to see a preview</div>';
+        // No path argument: the server opens the configured library folder.
+        await this.browseDirectory(null);
     }
 
-    async saveLibraryFolder() {
-        const path = this.libraryFolderEl.value.trim();
-        await this.saveSettings({ library_directory: path });
-        this.logMessage(`Library folder set to: ${path}`, 'success');
+    closePicker() {
+        this.showPickerEl.style.display = 'none';
+        this.pickerMode = null;
+    }
+
+    /** Use the folder currently open in the picker. */
+    async confirmPicker() {
+        const path = this.currentPath;
+        if (!path) return;
+        const mode = this.pickerMode;
+        this.closePicker();
+
+        if (mode === 'add') {
+            await this.addCurrentDirectoryToPlaylist();
+            // Adding means you're working on the playlist, so show it.
+            this.selection = { type: 'playlist', name: this.currentSavedPlaylistName, path: null };
+            await this.saveSettings({ loaded_kind: 'playlist' });
+            await this.loadPlaylist();
+        } else {
+            await this.loadShow(path);
+        }
+    }
+
+    /** Load a single show as what's queued up (does not start playing). */
+    async loadShow(path) {
+        const name = path.split('/').filter(Boolean).pop() || path;
+        this.selection = { type: 'show', name, path };
+        await this.saveSettings({ selected_directory: path, loaded_kind: 'show' });
+        this.selectedDirectory = path;
+        this.logMessage(`Loaded show: ${name} — press Play to start`, 'success');
+        await this.loadPlaylist();
+        this.updateNowPlaying();
     }
 
     /** Reflect the selection (and, while running, what's actually playing). */
@@ -605,26 +754,61 @@ class ChromecastSlideshowController {
 
         const item = playlistStatus && playlistStatus.current_item;
         if (playlistStatus && playlistStatus.running && item) {
-            const listName = playlistStatus.virtual_name
-                || (this.isVirtualPlaylist ? 'All Shows' : this.currentSavedPlaylistName);
-            this.nowPlayingEl.textContent = `${listName} — ${item.directory_name}`;
+            this.nowPlayingEl.textContent = item.directory_name;
+            this.setCurrentShowThumbnail(item.directory_path);
 
-            const mins = Math.floor(playlistStatus.time_remaining / 60);
-            const secs = playlistStatus.time_remaining % 60;
-            const clock = `${mins}:${String(secs).padStart(2, '0')}`;
-            setRemaining(playlistStatus.paused ? `paused · ${clock} left` : `${clock} left`);
+            if (playlistStatus.extended) {
+                setRemaining(playlistStatus.paused ? 'paused · extended' : 'extended — no time limit');
+            } else {
+                const mins = Math.floor(playlistStatus.time_remaining / 60);
+                const secs = playlistStatus.time_remaining % 60;
+                const clock = `${mins}:${String(secs).padStart(2, '0')}`;
+                setRemaining(playlistStatus.paused ? `paused · ${clock} left` : `${clock} left`);
+            }
             return;
         }
 
+        if (this.showPlaying && this.selection.name) {
+            this.nowPlayingEl.textContent = this.selection.name;
+            this.setCurrentShowThumbnail(this.selection.path);
+            setRemaining('extended — no time limit');
+            return;
+        }
+
+        // Nothing is playing: Current Show reflects that, and Up Next below
+        // shows what's queued.
         setRemaining('');
-        if (this.selection.type === 'show' && this.selection.name) {
-            this.nowPlayingEl.textContent = `Show: ${this.selection.name}`;
+        this.nowPlayingEl.textContent = 'Nothing playing';
+        this.setCurrentShowThumbnail(null);
+    }
+
+    /** One thumbnail for the show currently on the screens. */
+    async setCurrentShowThumbnail(directoryPath) {
+        if (!this.currentShowThumbEl) return;
+
+        if (!directoryPath) {
+            this.currentShowThumbEl.removeAttribute('src');
+            this.currentShowThumbEl.style.visibility = 'hidden';
+            this._thumbDir = null;
             return;
         }
-        const count = this.playlistItems.length;
-        this.nowPlayingEl.textContent = count
-            ? `Playlist: ${this.currentSavedPlaylistName} (${count} show${count === 1 ? '' : 's'})`
-            : 'Nothing playing';
+        if (this._thumbDir === directoryPath) return;   // already showing it
+        this._thumbDir = directoryPath;
+
+        try {
+            const response = await fetch(`/api/directory-images?path=${encodeURIComponent(directoryPath)}`);
+            const data = await response.json();
+            const first = data.images && data.images[0];
+            if (!first) {
+                this.currentShowThumbEl.style.visibility = 'hidden';
+                return;
+            }
+            this.currentShowThumbEl.src =
+                `/api/thumbnails/${first.name}?dir=${encodeURIComponent(directoryPath)}`;
+            this.currentShowThumbEl.style.visibility = 'visible';
+        } catch (error) {
+            this.currentShowThumbEl.style.visibility = 'hidden';
+        }
     }
 
     async startPlaylistSlideshow() {
@@ -712,9 +896,12 @@ class ChromecastSlideshowController {
                 this.logMessage('Slideshow stopped', 'success');
             }
 
-            // Stopping hands control back to the stored playlist, which is
-            // still loaded (and replaces the All Shows view if it was showing).
-            this.selection = { type: 'playlist', name: this.currentSavedPlaylistName, path: null };
+            // Stop only stops playback — whatever is loaded stays loaded, the
+            // same way Load Playlist / Load Show leave things. (An All Shows
+            // run ends, so the stored playlist reappears via loadPlaylist.)
+            this.showPlaying = false;
+            this.isExtended = false;
+            this.updateExtendButton();
             await this.loadPlaylist();
             this.updateNowPlaying();
 
@@ -746,15 +933,23 @@ class ChromecastSlideshowController {
     }
 
     updateSlideshowControls(isRunning, mode = 'playlist') {
-        // Running state is conveyed by the buttons and the Now playing line,
-        // so there is no separate status/progress display to update.
-        if (this.playShowBtn) this.playShowBtn.disabled = !this.currentPath;
-        this.startPlaylistBtn.disabled = isRunning;
+        // A single show casts outside playlist mode, so playlist status events
+        // report running=false while it plays; keep the transport live for it.
+        const playing = isRunning || this.showPlaying;
+
+        // Play stays enabled while something plays: it starts what's *loaded*,
+        // which may differ from what's currently casting.
+        this.startPlaylistBtn.disabled = false;
+        this.stopSlideshowBtn.disabled = !playing;
+        // Pause/Skip act on playlist timing, which a single show has none of.
         this.pauseSlideshowBtn.disabled = !isRunning;
         this.skipSlideshowBtn.disabled = !isRunning;
-        this.stopSlideshowBtn.disabled = !isRunning;
+        // Extend applies to whatever is playing. A single show already runs
+        // until stopped, so it shows as extended while one is casting.
+        this.extendSlideshowBtn.disabled = !playing;
+        this.updateExtendButton();
 
-        if (!isRunning) this.updateNowPlaying();
+        if (!playing) this.updateNowPlaying();
     }
 
     updateCurrentImages(images) {
@@ -786,8 +981,8 @@ class ChromecastSlideshowController {
     }
 
     updateStartButtonState() {
-        // Play Show only needs a browsed folder; image/device checks happen server-side.
-        if (this.playShowBtn) this.playShowBtn.disabled = !this.currentPath;
+        // The picker's confirm button is the only thing gated on a browsed folder.
+        if (this.pickerConfirmBtn) this.pickerConfirmBtn.disabled = !this.currentPath;
     }
 
     async saveSettings(additionalSettings = {}) {
@@ -948,23 +1143,46 @@ class ChromecastSlideshowController {
     }
 
     // Playlist Management Methods
+    /**
+     * Render what's loaded, in order of precedence:
+     *   1. a virtual playlist (All Shows) while it's playing
+     *   2. a single loaded show, shown as a one-item list
+     *   3. the stored playlist
+     */
     async loadPlaylist() {
         try {
             const response = await fetch('/api/playlist');
             const data = await response.json();
 
-            this.playlistItems = data.items || [];
-            // While a virtual playlist plays, show its name and treat it as
-            // read-only — the stored playlist is untouched underneath.
             this.isVirtualPlaylist = !!data.virtual;
+
             if (this.isVirtualPlaylist) {
+                this.playlistItems = data.items || [];
+                this.playlistLabelEl.textContent = 'Up Next:';
                 this.playlistNameEl.textContent = data.virtual_name || 'All Shows';
                 this.playlistDirtyEl.style.display = 'none';
-            } else if (this._wasVirtual) {
-                // Just left virtual mode — restore the real playlist's name.
-                this.playlistNameEl.textContent = this.currentSavedPlaylistName;
+            } else if (this.selection.type === 'show' && this.selection.path) {
+                // Single show: a one-item list, so what you see is what plays.
+                this.playlistItems = [{
+                    id: 'loaded-show',
+                    directory_path: this.selection.path,
+                    directory_name: this.selection.name,
+                    duration_minutes: null,
+                    is_valid: 1
+                }];
+                this.playlistLabelEl.textContent = 'Up Next:';
+                this.playlistNameEl.textContent = this.selection.name;
+                this.playlistDirtyEl.style.display = 'none';
+            } else {
+                this.playlistItems = data.items || [];
+                this.playlistLabelEl.textContent = 'Up Next:';
+                if (this._wasVirtual || this._wasShow) {
+                    this.playlistNameEl.textContent = this.currentSavedPlaylistName;
+                }
             }
+
             this._wasVirtual = this.isVirtualPlaylist;
+            this._wasShow = this.selection.type === 'show';
             this.updatePlaylistDisplay();
         } catch (error) {
             this.logMessage(`Error loading playlist: ${error.message}`, 'error');
@@ -1001,13 +1219,34 @@ class ChromecastSlideshowController {
 
     createPlaylistItemElement(item, index) {
         const div = document.createElement('div');
-        div.className = `playlist-item ${item.is_valid ? '' : 'invalid'}`;
+        const broken = !item.is_valid;
+        div.className = `playlist-item ${broken ? 'invalid item-broken' : ''}`;
         div.draggable = true;
         div.dataset.itemId = item.id;
 
         const durationOptions = [1, 2, 5, 10, 15, 20, 30, 45, 60]
             .map(minutes => `<option value="${minutes}" ${item.duration_minutes === minutes ? 'selected' : ''}>${minutes} min</option>`)
             .join('');
+
+        // A loaded single show has no playlist duration and nothing to remove.
+        const isLoadedShow = item.id === 'loaded-show';
+        const durationCell = isLoadedShow
+            ? ''
+            : `<div class="playlist-item-duration">
+                <select onchange="controller.updatePlaylistItemDuration(${item.id}, this.value)">
+                    ${durationOptions}
+                </select>
+            </div>`;
+        const actionsCell = isLoadedShow
+            ? ''
+            : `<div class="playlist-item-actions">
+                <button class="playlist-item-remove" onclick="controller.removePlaylistItem(${item.id})" title="Remove">
+                    🗑️
+                </button>
+            </div>`;
+        const brokenBadge = broken
+            ? '<span class="item-broken-badge" title="This folder no longer exists, so this show is skipped">MISSING</span>'
+            : '';
 
         div.innerHTML = `
             <span class="playlist-item-number">[${index + 1}]</span>
@@ -1016,19 +1255,11 @@ class ChromecastSlideshowController {
                 <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Crect width='40' height='40' fill='%23f0f0f0'/%3E%3Ctext x='50%' y='50%' text-anchor='middle' dy='.3em' fill='%23999'%3E📷%3C/text%3E%3C/svg%3E" alt="Loading..." class="thumbnail-img">
             </div>
             <div class="playlist-item-info">
-                <div class="playlist-item-name">${item.directory_name}</div>
+                <div class="playlist-item-name">${item.directory_name}${brokenBadge}</div>
                 <div class="playlist-item-path">${item.directory_path}</div>
             </div>
-            <div class="playlist-item-duration">
-                <select onchange="controller.updatePlaylistItemDuration(${item.id}, this.value)">
-                    ${durationOptions}
-                </select>
-            </div>
-            <div class="playlist-item-actions">
-                <button class="playlist-item-remove" onclick="controller.removePlaylistItem(${item.id})" title="Remove">
-                    🗑️
-                </button>
-            </div>
+            ${durationCell}
+            ${actionsCell}
         `;
 
         // Add drag and drop event listeners
@@ -1116,11 +1347,14 @@ class ChromecastSlideshowController {
         this.isDirty = false;
         this.currentSavedPlaylistId = id;
         this.currentSavedPlaylistName = name;
+        this.playlistLabelEl.textContent = 'Up Next:';
         this.playlistNameEl.textContent = name;
         this.playlistDirtyEl.style.display = 'none';
-        // Persist which playlist is loaded so the name survives a page reload
-        // (and reappears correctly after an All Shows run).
-        this.saveSettings({ current_playlist_name: name });
+        // Loading or creating a playlist leaves single-show mode.
+        this.selection = { type: 'playlist', name, path: null };
+        // Persist what's loaded so it survives a page reload (and reappears
+        // correctly after an All Shows run).
+        this.saveSettings({ current_playlist_name: name, loaded_kind: 'playlist' });
     }
 
     // --- Create (New) ---
@@ -1234,6 +1468,18 @@ class ChromecastSlideshowController {
                     this.loadPlaylistDropdown.appendChild(item);
                 });
             }
+
+            // "Create New" sits under the saved playlists, as its own option.
+            const createItem = document.createElement('div');
+            createItem.className = 'playlist-dropdown-item playlist-dropdown-create';
+            createItem.innerHTML = '<span class="playlist-dropdown-item-name">+ Create New</span>';
+            createItem.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.hideLoadDropdown();
+                this.createPlaylist();
+            });
+            this.loadPlaylistDropdown.appendChild(createItem);
+
             this.loadPlaylistDropdown.style.display = 'block';
         } catch (error) {
             this.logMessage(`Error loading playlists: ${error.message}`, 'error');
@@ -1341,9 +1587,11 @@ class ChromecastSlideshowController {
     }
 
     updatePlaylistControls(isRunning, isPaused) {
-        this.startPlaylistBtn.disabled = isRunning;
+        // Play stays enabled — see updateSlideshowControls.
+        this.startPlaylistBtn.disabled = false;
         this.pauseSlideshowBtn.disabled = !isRunning;
         this.skipSlideshowBtn.disabled = !isRunning;
+        this.extendSlideshowBtn.disabled = !isRunning;
 
         if (isPaused) {
             this.pauseSlideshowBtn.textContent = '▶️ Resume';
@@ -1354,6 +1602,13 @@ class ChromecastSlideshowController {
 
     updatePlaylistProgress(status) {
         this.updateNowPlaying(status);
+
+        // Keep the Extend button in sync with the server (it clears itself on
+        // skip/stop/new playlist, which the UI doesn't initiate).
+        if (typeof status.extended === 'boolean' && status.extended !== this.isExtended) {
+            this.isExtended = status.extended;
+            this.updateExtendButton();
+        }
 
         // Update pause button text
         if (status.paused) {
