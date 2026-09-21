@@ -304,7 +304,16 @@ class ChromecastSlideshowController {
         // Don't auto-browse on load — user navigates explicitly via shortcuts
         this.directoryListEl.innerHTML = '';
         await this.loadDevices();
+        // Ask the server whether a single show is casting: showPlaying is
+        // otherwise only set by this browser's own actions, so a reload (or a
+        // show the scheduler started) would leave the page thinking nothing
+        // is playing.
+        try {
+            const s = await (await fetch('/api/slideshow/status')).json();
+            this.showPlaying = !!s.running;
+        } catch (e) { /* leave it false */ }
         await this.loadPlaylist();
+        this.updateSlideshowControls(false, 'show');
         await this.loadSchedule();
         // Removed loadSlideshowStatus() - using playlist system exclusively
         // Removed loadPlaylistStatus() - rely on WebSocket updates for real-time status
@@ -654,8 +663,7 @@ class ChromecastSlideshowController {
             this.allShowsQueue = data.items;
             this.selection = { type: 'all-shows', name: data.name, path: null };
             await this.saveSettings({ loaded_kind: 'all_shows' });
-            this.logMessage(`Loaded All Shows: ${data.item_count} shows — press Play to start`, 'success');
-            await this.loadPlaylist();
+            await this.playAllShows();   // loading plays immediately
         } catch (error) {
             this.logMessage(`Error loading All Shows: ${error.message}`, 'error');
         }
@@ -723,15 +731,17 @@ class ChromecastSlideshowController {
         }
     }
 
-    /** Load a single show as what's queued up (does not start playing). */
+    /**
+     * Load a single show and start it, replacing whatever was playing.
+     * Loading plays immediately rather than queueing: what's listed is always
+     * what's on the screens, which is both simpler and keeps the "Now Playing"
+     * marker honest.
+     */
     async loadShow(path) {
         const name = path.split('/').filter(Boolean).pop() || path;
-        this.selection = { type: 'show', name, path };
-        await this.saveSettings({ selected_directory: path, loaded_kind: 'show' });
-        this.selectedDirectory = path;
-        this.logMessage(`Loaded show: ${name} — press Play to start`, 'success');
+        await this.saveSettings({ loaded_kind: 'show' });
+        await this.playShow(path);
         await this.loadPlaylist();
-        this.updateNowPlaying();
     }
 
     /** Reflect the selection (and, while running, what's actually playing). */
@@ -756,8 +766,10 @@ class ChromecastSlideshowController {
             const secs = playlistStatus.time_remaining % 60;
             const clock = `${mins}:${String(secs).padStart(2, '0')} left`;
             label = playlistStatus.paused ? `Now Playing · paused · ${clock}` : `Now Playing · ${clock}`;
-        } else if (this.showPlaying) {
-            // A single loaded show is the only row in the list.
+        } else if (this.showPlaying && this.selection.type === 'show') {
+            // A single show is casting AND it's the show being listed. The
+            // selection check matters: without it, a show left playing while a
+            // playlist is displayed would badge that playlist's first row.
             playingRow = rows[0];
             label = 'Now Playing';
         }
@@ -1473,6 +1485,8 @@ class ChromecastSlideshowController {
                 this.markClean(data.name, data.id);
                 this.logMessage(`Loaded playlist: "${data.name}"`, 'success');
                 setTimeout(() => { this._suppressDirty = false; }, 300);
+                // Loading swaps what's on the screens straight away.
+                await this.startPlaylistSlideshow();
             } else {
                 const err = await response.json();
                 this.logMessage(`Error loading playlist: ${err.error}`, 'error');
