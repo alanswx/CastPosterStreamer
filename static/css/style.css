@@ -1342,3 +1342,31 @@ header h1 {
     .log-container { max-height: 160px; }
     #connection-status { font-size: 0.68rem; }
 }
+
+/* Zone switch: which set of screens everything below refers to */
+.zone-toggle {
+    display: inline-flex;
+    margin-top: 0.6rem;
+    border: 1px solid #d8dde2;
+    border-radius: 999px;
+    overflow: hidden;
+    background: #f4f6f8;
+}
+
+.zone-btn {
+    border: none;
+    background: none;
+    padding: 0.3rem 1.1rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #7f8c8d;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.zone-btn:hover:not(.is-active) { color: #2c3e50; }
+
+.zone-btn.is-active {
+    background: #3498db;
+    color: #fff;
+}

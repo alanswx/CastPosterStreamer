@@ -49,6 +49,10 @@ class ChromecastSlideshowController {
         this.pickerCloseBtn = document.getElementById('picker-close');
         this.pickerMode = null;          // 'load' | 'add' while the picker is open
 
+        // Which set of screens everything on the page refers to.
+        this.zone = localStorage.getItem('posters.zone') || 'barn';
+        this.zoneToggleEl = document.getElementById('zone-toggle');
+
         // What the Play button will start: the playlist, or a single loaded show.
         this.selection = { type: 'playlist', name: null, path: null };
         this.isVirtualPlaylist = false;
@@ -134,6 +138,12 @@ class ChromecastSlideshowController {
         this.scheduleRunOffBtn.addEventListener('click', () => this.runScheduleNow('off'));
         this.scheduleCheckBtn.addEventListener('click', () => this.checkScreens());
 
+        // Zone switch
+        [...this.zoneToggleEl.querySelectorAll('.zone-btn')].forEach(btn =>
+            btn.addEventListener('click', () => this.setZone(btn.dataset.zone)));
+        [...this.zoneToggleEl.querySelectorAll('.zone-btn')].forEach(b =>
+            b.classList.toggle('is-active', b.dataset.zone === this.zone));
+
         // Reconnect when tab becomes visible again (browser throttles WebSocket heartbeat in background)
         document.addEventListener('visibilitychange', () => {
             if (!document.hidden && !this.isConnected) {
@@ -162,7 +172,7 @@ class ChromecastSlideshowController {
             // Only act if the server says something is playing — an idle app
             // legitimately emits nothing.
             try {
-                const status = await (await fetch('/api/playlist/status')).json();
+                const status = await (await this.api('/api/playlist/status')).json();
                 if (!status.running && !this.showPlaying) {
                     this._lastEventAt = Date.now();
                     return;
@@ -265,7 +275,21 @@ class ChromecastSlideshowController {
 
         this.socket.onAny(() => { this._lastEventAt = Date.now(); });
 
+        // The kitchen Frame reports through its own event; ignore whichever
+        // zone isn't on screen so the two never overwrite each other's status.
+        this.socket.on('kitchen_status_update', (status) => {
+            if (this.zone !== 'kitchen') return;
+            try {
+                this.updateSlideshowControls(status.running, 'playlist');
+                this.updatePlaylistProgress(status);
+                this.highlightCurrentPlaylistItem(status);
+            } catch (error) {
+                console.error('Error processing kitchen_status_update:', error);
+            }
+        });
+
         this.socket.on('playlist_status_update', (status) => {
+            if (this.zone !== 'barn') return;
             // Ensure status is an object if received as string
             if (typeof status === 'string') {
                 try {
@@ -306,20 +330,67 @@ class ChromecastSlideshowController {
         // show the scheduler started) would leave the page thinking nothing
         // is playing.
         try {
-            const s = await (await fetch('/api/slideshow/status')).json();
+            const s = await (await this.api('/api/slideshow/status')).json();
             this.showPlaying = !!s.running;
         } catch (e) { /* leave it false */ }
         await this.loadPlaylist();
-        this.updateSlideshowControls(false, 'show');
+        await this.refreshPlaybackState();
         await this.loadSchedule();
         // Removed loadSlideshowStatus() - using playlist system exclusively
         // Removed loadPlaylistStatus() - rely on WebSocket updates for real-time status
         this.discoverDevices();
     }
 
+    /**
+     * Pull the current zone's playback state rather than waiting for a push.
+     * The kitchen's interval is measured in minutes, so a freshly loaded page
+     * would otherwise show stale controls until the next image change.
+     */
+    async refreshPlaybackState() {
+        try {
+            const status = await (await this.api('/api/playlist/status')).json();
+            this.updateSlideshowControls(status.running, 'playlist');
+            this.updatePlaylistProgress(status);
+            this.highlightCurrentPlaylistItem(status);
+        } catch (e) {
+            this.updateSlideshowControls(false, 'playlist');
+        }
+    }
+
+    /**
+     * fetch() that carries the current zone. Every playlist, schedule and
+     * playback endpoint is zone-scoped; routing all calls through here means
+     * no call site can forget, which is how the two zones stay independent.
+     */
+    async api(path, opts = {}) {
+        const zone = this.zone || 'barn';
+        const url = path + (path.includes('?') ? '&' : '?') + 'zone=' + encodeURIComponent(zone);
+        if (opts.body && typeof opts.body === 'string') {
+            try {
+                const body = JSON.parse(opts.body);
+                body.zone = zone;
+                opts = { ...opts, body: JSON.stringify(body) };
+            } catch (e) { /* not JSON; leave it alone */ }
+        }
+        return fetch(url, opts);
+    }
+
+    setZone(zone) {
+        if (zone === this.zone) return;
+        this.zone = zone;
+        localStorage.setItem('posters.zone', zone);
+        [...this.zoneToggleEl.querySelectorAll('.zone-btn')].forEach(b =>
+            b.classList.toggle('is-active', b.dataset.zone === zone));
+        this.closePicker();
+        this.allShowsQueue = null;
+        this.selection = { type: 'playlist', name: null, path: null };
+        this.logMessage(`Switched to ${zone}`, 'info');
+        this.loadInitialData();
+    }
+
     async loadSettings() {
         try {
-            const response = await fetch('/api/settings');
+            const response = await this.api('/api/settings');
             const settings = await response.json();
 
             if (settings.slideshow_interval && this.slideshowIntervalEl) {
@@ -338,7 +409,7 @@ class ChromecastSlideshowController {
             // A loaded All Shows queue survives a reload.
             if (settings.loaded_kind === 'all_shows') {
                 try {
-                    const all = await (await fetch('/api/playlist/all-shows')).json();
+                    const all = await (await this.api('/api/playlist/all-shows')).json();
                     if (all.item_count) {
                         this.allShowsQueue = all.items;
                         this.selection = { type: 'all-shows', name: all.name, path: null };
@@ -426,7 +497,7 @@ class ChromecastSlideshowController {
             this.selectedDirectory = this.currentPath;
 
             // Then add to playlist
-            const response = await fetch('/api/playlist/items', {
+            const response = await this.api('/api/playlist/items', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' }
             });
@@ -446,7 +517,7 @@ class ChromecastSlideshowController {
 
     async loadDevices() {
         try {
-            const response = await fetch('/api/devices');
+            const response = await this.api('/api/devices');
             this.devices = await response.json();
             this.updateDeviceList();
         } catch (error) {
@@ -575,7 +646,7 @@ class ChromecastSlideshowController {
         try {
             // One atomic call: stopping and starting separately left a gap
             // wide enough for the scheduler (or another tab) to slip in.
-            const response = await fetch('/api/show/play', {
+            const response = await this.api('/api/show/play', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ path: showPath })
@@ -603,7 +674,7 @@ class ChromecastSlideshowController {
      */
     async loadAllShows() {
         try {
-            const response = await fetch('/api/playlist/all-shows');
+            const response = await this.api('/api/playlist/all-shows');
             const data = await response.json();
             if (!response.ok) throw new Error(data.error || 'Failed to load All Shows');
             if (!data.item_count) {
@@ -627,7 +698,7 @@ class ChromecastSlideshowController {
      */
     async playAllShows() {
         try {
-            const response = await fetch('/api/playlist/play-all-shows', { method: 'POST' });
+            const response = await this.api('/api/playlist/play-all-shows', { method: 'POST' });
             const result = await response.json();
             if (!response.ok) throw new Error(result.error || 'Failed to play all shows');
 
@@ -750,7 +821,7 @@ class ChromecastSlideshowController {
     async startPlaylistSlideshow() {
         try {
             await this.saveSettings();
-            const response = await fetch('/api/playlist/start', { method: 'POST' });
+            const response = await this.api('/api/playlist/start', { method: 'POST' });
             const result = await response.json();
 
             if (!response.ok) {
@@ -769,11 +840,11 @@ class ChromecastSlideshowController {
         // Check which mode is running and pause accordingly
         try {
             // Try playlist pause first
-            const playlistResponse = await fetch('/api/playlist/status');
+            const playlistResponse = await this.api('/api/playlist/status');
             const playlistStatus = await playlistResponse.json();
 
             if (playlistStatus.running) {
-                const response = await fetch('/api/playlist/pause', { method: 'POST' });
+                const response = await this.api('/api/playlist/pause', { method: 'POST' });
                 if (!response.ok) {
                     const error = await response.json();
                     this.logMessage(`Error pausing playlist: ${error.error}`, 'error');
@@ -791,11 +862,11 @@ class ChromecastSlideshowController {
     async skipSlideshow() {
         try {
             // Check which mode is running and skip accordingly
-            const playlistResponse = await fetch('/api/playlist/status');
+            const playlistResponse = await this.api('/api/playlist/status');
             const playlistStatus = await playlistResponse.json();
 
             if (playlistStatus.running) {
-                const response = await fetch('/api/playlist/skip', { method: 'POST' });
+                const response = await this.api('/api/playlist/skip', { method: 'POST' });
                 if (!response.ok) {
                     const error = await response.json();
                     this.logMessage(`Error skipping playlist item: ${error.error}`, 'error');
@@ -807,7 +878,7 @@ class ChromecastSlideshowController {
             }
 
             // Single directory skip
-            const response = await fetch('/api/slideshow/skip', { method: 'POST' });
+            const response = await this.api('/api/slideshow/skip', { method: 'POST' });
             if (!response.ok) {
                 const error = await response.json();
                 this.logMessage(`Error skipping: ${error.error}`, 'error');
@@ -820,8 +891,8 @@ class ChromecastSlideshowController {
     async stopSlideshow() {
         try {
             // Force stop both playlist and regular slideshow regardless of frontend state
-            const playlistResponse = await fetch('/api/playlist/stop', { method: 'POST' });
-            const slideshowResponse = await fetch('/api/slideshow/stop', { method: 'POST' });
+            const playlistResponse = await this.api('/api/playlist/stop', { method: 'POST' });
+            const slideshowResponse = await this.api('/api/slideshow/stop', { method: 'POST' });
 
             // Check results
             if (playlistResponse.ok) {
@@ -854,7 +925,7 @@ class ChromecastSlideshowController {
 
     async loadSlideshowStatus() {
         try {
-            const response = await fetch('/api/slideshow/status');
+            const response = await this.api('/api/slideshow/status');
             const status = await response.json();
 
             this.updateSlideshowControls(status.running);
@@ -922,7 +993,7 @@ class ChromecastSlideshowController {
         };
 
         try {
-            const response = await fetch('/api/settings', {
+            const response = await this.api('/api/settings', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(settings)
@@ -973,7 +1044,7 @@ class ChromecastSlideshowController {
     // Screen Schedule Methods
     async loadSchedule() {
         try {
-            const response = await fetch('/api/schedule');
+            const response = await this.api('/api/schedule');
             this.renderSchedule(await response.json());
         } catch (error) {
             this.logMessage(`Error loading schedule: ${error.message}`, 'error');
@@ -987,7 +1058,7 @@ class ChromecastSlideshowController {
             off_time: this.scheduleOffTimeEl.value
         };
         try {
-            const response = await fetch('/api/schedule', {
+            const response = await this.api('/api/schedule', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -1027,7 +1098,7 @@ class ChromecastSlideshowController {
     async checkScreens() {
         this.scheduleScreensEl.textContent = 'Checking…';
         try {
-            const response = await fetch('/api/schedule/power-states');
+            const response = await this.api('/api/schedule/power-states');
             this.renderScreenStates(await response.json());
         } catch (error) {
             this.scheduleScreensEl.textContent = '—';
@@ -1080,7 +1151,7 @@ class ChromecastSlideshowController {
      */
     async loadPlaylist() {
         try {
-            const response = await fetch('/api/playlist');
+            const response = await this.api('/api/playlist');
             const data = await response.json();
 
             this.isVirtualPlaylist = !!data.virtual;
@@ -1296,7 +1367,7 @@ class ChromecastSlideshowController {
     async createPlaylist() {
         this._suppressDirty = true;
         try {
-            const response = await fetch('/api/playlist/clear', { method: 'DELETE' });
+            const response = await this.api('/api/playlist/clear', { method: 'DELETE' });
             if (response.ok) {
                 this.markClean('New Playlist', null);
                 this.logMessage('New playlist created', 'success');
@@ -1345,7 +1416,7 @@ class ChromecastSlideshowController {
                     body: JSON.stringify({ name })
                 });
             } else {
-                response = await fetch('/api/saved-playlists', {
+                response = await this.api('/api/saved-playlists', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ name })
@@ -1379,7 +1450,7 @@ class ChromecastSlideshowController {
 
     async showLoadDropdown() {
         try {
-            const response = await fetch('/api/saved-playlists');
+            const response = await this.api('/api/saved-playlists');
             const playlists = await response.json();
             this.loadPlaylistDropdown.innerHTML = '';
 
@@ -1436,7 +1507,7 @@ class ChromecastSlideshowController {
     async loadSavedPlaylist(id, name) {
         this.hideLoadDropdown();
         // Stop any running slideshow before swapping the playlist
-        try { await fetch('/api/playlist/stop', { method: 'POST' }); } catch (_) {}
+        try { await this.api('/api/playlist/stop', { method: 'POST' }); } catch (_) {}
         this._suppressDirty = true;
         try {
             const response = await fetch(`/api/saved-playlists/${id}/load`, { method: 'POST' });
@@ -1480,7 +1551,7 @@ class ChromecastSlideshowController {
 
     async startPlaylist() {
         try {
-            const response = await fetch('/api/playlist/start', { method: 'POST' });
+            const response = await this.api('/api/playlist/start', { method: 'POST' });
             if (!response.ok) {
                 const error = await response.json();
                 this.logMessage(`Error starting playlist: ${error.error}`, 'error');
@@ -1492,7 +1563,7 @@ class ChromecastSlideshowController {
 
     async pausePlaylist() {
         try {
-            const response = await fetch('/api/playlist/pause', { method: 'POST' });
+            const response = await this.api('/api/playlist/pause', { method: 'POST' });
             if (!response.ok) {
                 const error = await response.json();
                 this.logMessage(`Error pausing playlist: ${error.error}`, 'error');
@@ -1504,7 +1575,7 @@ class ChromecastSlideshowController {
 
     async skipPlaylist() {
         try {
-            const response = await fetch('/api/playlist/skip', { method: 'POST' });
+            const response = await this.api('/api/playlist/skip', { method: 'POST' });
             if (!response.ok) {
                 const error = await response.json();
                 this.logMessage(`Error skipping playlist item: ${error.error}`, 'error');
@@ -1516,7 +1587,7 @@ class ChromecastSlideshowController {
 
     async loadPlaylistStatus() {
         try {
-            const response = await fetch('/api/playlist/status');
+            const response = await this.api('/api/playlist/status');
             const status = await response.json();
 
             console.log('📡 SYNC: loadPlaylistStatus got:', { running: status.running, current_item_id: status.current_item?.id, current_item_name: status.current_item?.directory_name });
@@ -1645,7 +1716,7 @@ class ChromecastSlideshowController {
         const itemIds = newOrder.map(item => item.id);
 
         try {
-            const response = await fetch('/api/playlist/reorder', {
+            const response = await this.api('/api/playlist/reorder', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ item_ids: itemIds })

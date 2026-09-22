@@ -516,7 +516,14 @@ class FrameController:
                         self.logger.warning(f"[frame] select failed: {e}")
                     idx += 1
                     self._emit_status()
-                    self._sleep(interval)
+                    # Emit while waiting too: the kitchen interval is minutes,
+                    # and a UI that only hears on image change sits blind.
+                    waited = 0.0
+                    while waited < interval and self.is_running and not self.skip_requested:
+                        step = min(15.0, interval - waited)
+                        self._sleep(step)
+                        waited += step
+                        self._emit_status()
                     interval = self._interval()
 
                 try:
