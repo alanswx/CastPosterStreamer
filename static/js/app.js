@@ -1090,7 +1090,7 @@ class ChromecastSlideshowController {
         btn.textContent = state === 'on' ? 'Turning on…' : 'Turning off…';
         this.logMessage(`Running "${state}" sequence now (first time on a screen may need you to press Allow on the TV)`, 'info');
         try {
-            const response = await fetch(`/api/schedule/run/${state}`, { method: 'POST' });
+            const response = await this.api(`/api/schedule/run/${state}`, { method: 'POST' });
             const result = await response.json();
             if (!response.ok) throw new Error(result.error || `Failed to run ${state}`);
             this.logMessage(this.describeScheduleResult(result), result.ok ? 'success' : 'error');
@@ -1418,7 +1418,7 @@ class ChromecastSlideshowController {
         try {
             let response;
             if (id !== null) {
-                response = await fetch(`/api/saved-playlists/${id}`, {
+                response = await this.api(`/api/saved-playlists/${id}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ name })
@@ -1518,7 +1518,7 @@ class ChromecastSlideshowController {
         try { await this.api('/api/playlist/stop', { method: 'POST' }); } catch (_) {}
         this._suppressDirty = true;
         try {
-            const response = await fetch(`/api/saved-playlists/${id}/load`, { method: 'POST' });
+            const response = await this.api(`/api/saved-playlists/${id}/load`, { method: 'POST' });
             if (response.ok) {
                 const data = await response.json();
                 this.markClean(data.name, data.id);

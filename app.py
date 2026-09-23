@@ -828,7 +828,7 @@ def create_saved_playlist():
     if not name:
         return jsonify({'error': 'Name is required'}), 400
     try:
-        items = settings_manager.get_playlist_items()
+        items = settings_manager.get_playlist_items(zone=req_zone())
         save_items = [
             {k: v for k, v in item.items() if k in ('directory_path', 'directory_name', 'duration_minutes', 'order_index')}
             for item in items
@@ -848,7 +848,7 @@ def update_saved_playlist(playlist_id):
     if not name:
         return jsonify({'error': 'Name is required'}), 400
     try:
-        items = settings_manager.get_playlist_items()
+        items = settings_manager.get_playlist_items(zone=req_zone())
         save_items = [
             {k: v for k, v in item.items() if k in ('directory_path', 'directory_name', 'duration_minutes', 'order_index')}
             for item in items
