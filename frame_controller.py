@@ -146,6 +146,13 @@ class FrameController:
         self.thread = None
         self.current_index = 0
         self.current_item_start = None
+        # What the loop actually put on the panel, and the list it is working
+        # through. Status reports these rather than indexing into a freshly
+        # read playlist: the stored playlist can be replaced mid-show, and
+        # then the index means nothing — it named a show from the new list
+        # while the Frame was still displaying one from the old.
+        self.current_item: Optional[Dict[str, Any]] = None
+        self.playing_items: Optional[List[Dict[str, Any]]] = None
         self.virtual_items: Optional[List[Dict[str, Any]]] = None
         self.virtual_name: Optional[str] = None
         self._lock = threading.Lock()
@@ -439,6 +446,8 @@ class FrameController:
             self.skip_requested = False
             self.virtual_items = None
             self.virtual_name = None
+            self.current_item = None
+            self.playing_items = None
         self.logger.info("[frame] stopped")
 
     def toggle_pause(self):
@@ -466,11 +475,13 @@ class FrameController:
         if not items:
             self.is_running = False
             return
+        self.playing_items = items
 
         failures = 0
         while self._alive(generation):
             try:
                 item = items[self.current_index % len(items)]
+                self.current_item = item
                 directory = item["directory_path"]
                 duration = (item.get("duration_minutes") or 10) * 60
                 self.logger.info(f"[frame] show: {item['directory_name']} for {duration/60:.0f} min")
@@ -605,12 +616,12 @@ class FrameController:
     # ---------------------------------------------------------------- status
 
     def get_status(self) -> Dict[str, Any]:
-        items = self._active_items()
-        if not self.is_running or not items:
+        items = self.playing_items if self.is_running and self.playing_items else self._active_items()
+        item = self.current_item
+        if not self.is_running or not item:
             return {"running": False, "paused": False, "current_item": None,
                     "time_remaining": 0, "total_items": len(items),
                     "virtual_name": None}
-        item = items[self.current_index % len(items)]
         duration = (item.get("duration_minutes") or 10) * 60
         elapsed = time.time() - (self.current_item_start or time.time())
         return {
