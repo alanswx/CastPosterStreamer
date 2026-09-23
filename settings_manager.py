@@ -285,14 +285,24 @@ class SettingsManager:
             cursor.execute("DELETE FROM devices WHERE uuid = ?", (uuid,))
             conn.commit()
     
-    def get_slideshow_interval(self) -> int:
-        """Get slideshow interval in seconds."""
-        interval = self.get_setting('slideshow_interval')
-        return int(interval) if interval else 5
-    
-    def get_selected_directory(self) -> str:
-        """Get the currently selected image directory."""
-        directory = self.get_setting('selected_directory')
+    # These two are zone-scoped settings, so they live under "<zone>.<key>".
+    # Reading the bare key returns nothing on a migrated database, which is
+    # how the barn ended up ignoring its configured interval and silently
+    # rotating on the 5 second fallback instead. The bare key is still tried
+    # second, for a database that predates the zone migration.
+    def get_slideshow_interval(self, zone: str = ZONE_BARN) -> int:
+        """Get a zone's slideshow interval in seconds."""
+        interval = self.get_zone_setting(zone, 'slideshow_interval') \
+            or self.get_setting('slideshow_interval')
+        try:
+            return int(interval) if interval else 5
+        except (TypeError, ValueError):
+            return 5
+
+    def get_selected_directory(self, zone: str = ZONE_BARN) -> str:
+        """Get a zone's currently selected image directory."""
+        directory = self.get_zone_setting(zone, 'selected_directory') \
+            or self.get_setting('selected_directory')
         return directory if directory else os.path.expanduser('~')
 
     def get_library_directory(self) -> str:
