@@ -543,6 +543,19 @@ def skip_slideshow():
 
 
 # Playlist API endpoints
+def set_loaded(zone: str, kind: str, name: str = None):
+    """Record what a zone has loaded.
+
+    The heading the UI shows and what a scheduled start replays both come from
+    these two settings, so anything that changes a zone's playlist has to
+    record it here. Leaving the browser to write them afterwards is how the
+    kitchen ended up labelled "Offbeat" above a different playlist's shows.
+    """
+    settings_manager.save_zone_setting(zone, 'loaded_kind', kind)
+    if name is not None:
+        settings_manager.save_zone_setting(zone, 'current_playlist_name', name)
+
+
 @app.route('/api/playlist', methods=['GET'])
 def get_playlist():
     """Get the playlist to display.
@@ -566,12 +579,16 @@ def get_playlist():
 
     items = settings_manager.get_playlist_items(zone=zone)
     total_duration = settings_manager.get_playlist_total_duration(zone=zone)
+    # The name travels with the items so the heading always describes the list
+    # underneath it, whoever changed it and from which device.
     return jsonify({
         'items': items,
         'total_duration': total_duration,
         'item_count': len(items),
         'virtual': False,
         'virtual_name': None,
+        'playlist_name': settings_manager.get_zone_setting(zone, 'current_playlist_name') or '',
+        'loaded_kind': settings_manager.get_zone_setting(zone, 'loaded_kind') or 'playlist',
         'zone': zone,
     })
 
@@ -662,7 +679,9 @@ def reorder_playlist():
 def clear_playlist():
     """Clear all items from the playlist."""
     try:
-        settings_manager.clear_playlist()
+        zone = req_zone()
+        settings_manager.clear_playlist(zone=zone)
+        set_loaded(zone, 'playlist', '')
         socketio.emit('playlist_updated')
         return jsonify({'status': 'success'})
     except Exception as e:
@@ -887,6 +906,7 @@ def load_saved_playlist(playlist_id):
                 item.get('duration_minutes', 10),
                 zone=zone
             )
+        set_loaded(zone, 'playlist', saved['name'])
         socketio.emit('playlist_updated')
         return jsonify({'id': saved['id'], 'name': saved['name']})
     except Exception as e:

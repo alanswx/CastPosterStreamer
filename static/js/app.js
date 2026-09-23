@@ -1188,7 +1188,12 @@ class ChromecastSlideshowController {
                 this.playlistNameEl.textContent = this.selection.name;
                 this.playlistDirtyEl.style.display = 'none';
             } else {
+                // Name and items come from the one response, so the heading
+                // can never describe a different playlist to the list below.
                 this.playlistItems = data.items || [];
+                if (data.playlist_name !== undefined) {
+                    this.currentSavedPlaylistName = data.playlist_name || 'New Playlist';
+                }
                 this.playlistLabelEl.textContent = 'Now Playing:';
                 this.playlistNameEl.textContent = `(Playlist) ${this.currentSavedPlaylistName}`;
             }
