@@ -53,10 +53,9 @@ REST_PORT = 8001
 WS_PORT = 8002
 REMOTE_NAME = "Posters"
 
-# The panel as art mode sees it, and as you see it once physically rotated.
+# Art mode always renders to the panel's native landscape canvas, whichever
+# way the TV is physically hung.
 PANEL_LANDSCAPE = (3840, 2160)
-PANEL_PORTRAIT = (2160, 3840)
-ROTATE_DEGREES = 90          # CCW; cancels out this TV's portrait mounting
 JPEG_QUALITY = 90
 
 UPLOAD_GAP_SECONDS = 0.5     # consecutive art requests dislike being rushed
@@ -97,24 +96,34 @@ def send_wol(mac: str, broadcast: str = "255.255.255.255"):
 
 
 def prepare_image(path: str) -> bytes:
-    """Fit a poster to the portrait viewport, pad it, and rotate for the panel.
+    """Render a poster exactly the way the barn screens receive it.
 
-    Uploading a portrait poster raw gets it stretched across the landscape
-    canvas and shown sideways; this cancels both problems out.
+    The screens — barn and Frame alike — are mounted on their side, and the
+    posters have been rotated to suit that, so a correctly prepared image is
+    LANDSCAPE and appears upright once the panel is turned. Two things produce
+    that landscape image, and both must be handled the same way:
+
+      * Finder's "Rotate Left" is lossless: it leaves the original portrait
+        pixels alone and writes an EXIF orientation tag. exif_transpose applies
+        it, giving the landscape image.
+      * Some files instead have the rotation baked into their pixels and carry
+        no tag. They are already landscape.
+
+    So: apply EXIF, then fit to the panel's native landscape canvas. Rotating
+    here as well — which this used to do — turned the second kind through 90
+    degrees twice, which is why those posters came out sideways and
+    letterboxed while the barn showed them correctly.
     """
     with Image.open(path) as im:
-        im = im.convert("RGB")
-        # contain() scales up as well as down — thumbnail() only shrinks, which
-        # would leave a small poster marooned in a large black canvas.
-        fitted = ImageOps.contain(im, PANEL_PORTRAIT, Image.Resampling.LANCZOS)
+        oriented = ImageOps.exif_transpose(im).convert("RGB")
 
-    canvas = Image.new("RGB", PANEL_PORTRAIT, (0, 0, 0))
-    canvas.paste(fitted, ((PANEL_PORTRAIT[0] - fitted.width) // 2,
-                          (PANEL_PORTRAIT[1] - fitted.height) // 2))
-    rotated = canvas.rotate(ROTATE_DEGREES, expand=True)
+    fitted = ImageOps.contain(oriented, PANEL_LANDSCAPE, Image.Resampling.LANCZOS)
+    canvas = Image.new("RGB", PANEL_LANDSCAPE, (0, 0, 0))
+    canvas.paste(fitted, ((PANEL_LANDSCAPE[0] - fitted.width) // 2,
+                          (PANEL_LANDSCAPE[1] - fitted.height) // 2))
 
     buf = io.BytesIO()
-    rotated.save(buf, format="JPEG", quality=JPEG_QUALITY)
+    canvas.save(buf, format="JPEG", quality=JPEG_QUALITY)
     return buf.getvalue()
 
 
@@ -221,50 +230,53 @@ class FrameController:
             return {"success": False, "error": str(e)}
 
     def power_on(self, timeout: float = WAKE_TIMEOUT_SECONDS) -> Dict[str, Any]:
-        """Wake from standby and put the panel into art mode."""
-        host = self.host or self.locate()
+        """Wake from standby and put the panel into art mode.
+
+        Deep standby takes the TV off the network completely — no scan will
+        find it — so the magic packet goes out on the stored MAC first, and
+        only then do we look for it. Waiting to locate it before waking is a
+        deadlock: it cannot be located until it is awake.
+        """
+        host = self.host or self.settings_manager.get_setting("frame_host")
         mac = self.mac or self.settings_manager.get_setting("frame_mac")
-        if not host:
-            return {"success": False, "error": "Frame not found"}
 
-        if _power_state(host) != "on":
-            if mac:
-                send_wol(mac)
+        if host and _power_state(host) == "on":
+            self.host = host
+            self.set_art_mode(True)
+            return {"success": True}
+
+        if mac:
+            self.logger.info(f"[frame] waking {mac} (deep standby drops it off the network)")
+            send_wol(mac)
             deadline = time.time() + timeout
-            while time.time() < deadline and _power_state(host) != "on":
+            while time.time() < deadline:
                 time.sleep(3)
+                if host and _power_state(host) == "on":
+                    self.host = host
+                    self.set_art_mode(True)
+                    return {"success": True}
+        elif not host:
+            return {"success": False, "error": "Frame never located; no stored MAC"}
 
-        state = _power_state(host)
-        if state != "on":
-            # It may have taken a new IP while asleep.
-            if self.locate(rescan=True):
-                state = _power_state(self.host)
-        if state != "on":
-            return {"success": False, "error": f"did not wake (state={state})"}
+        # Still nothing: it may have taken a different address while asleep.
+        if self.locate(rescan=True) and _power_state(self.host) == "on":
+            self.set_art_mode(True)
+            return {"success": True}
 
-        self.set_art_mode(True)
-        return {"success": True}
+        return {"success": False, "error": "did not wake"}
 
     def ensure_awake(self) -> bool:
-        """Wake the TV if it's asleep and put it in art mode.
+        """Make sure the TV is awake and in art mode before any art request.
 
-        Uploads and selects fail with error -10 against a sleeping Frame, so
-        playback must do this before touching the art API — not merely try
-        set_artmode and hope.
+        Uploads and selects fail with error -10 against a sleeping Frame, and
+        the TV can fall asleep on its own mid-show, so this is called on
+        failure as well as at the start of a show.
         """
-        host = self.host or self.locate()
-        if not host:
-            return False
-        state = _power_state(host)
-        if state is None:
-            # Off the network entirely: it may be in deep standby, or moved.
-            if not self.locate(rescan=True):
-                return False
-            state = _power_state(self.host)
-        if state != "on":
-            self.logger.info(f"[frame] asleep (state={state}); waking before art requests")
-            return self.power_on().get("success", False)
-        return True
+        host = self.host or self.settings_manager.get_setting("frame_host")
+        if host and _power_state(host) == "on":
+            self.host = host
+            return True
+        return self.power_on().get("success", False)
 
     def set_art_mode(self, on: bool = True) -> bool:
         tv = self._tv()
@@ -370,6 +382,9 @@ class FrameController:
             return cid
         except Exception as e:
             self.logger.error(f"[frame] upload failed for {os.path.basename(path)}: {e}")
+            # -10 and timeouts usually mean the TV went to sleep under us.
+            if "-10" in str(e) or "time" in str(e).lower():
+                self.ensure_awake()
             return None
 
     # -------------------------------------------------------------- playback
@@ -529,18 +544,25 @@ class FrameController:
                         # The TV drops long-lived websockets, so a show lasting
                         # minutes will lose its connection mid-way. Reconnect
                         # once and retry rather than skipping the image.
-                        self.logger.warning(f"[frame] select failed ({e}); reconnecting")
+                        self.logger.warning(f"[frame] select failed ({e}); recovering")
                         try:
                             tv.close()
                         except Exception:
                             pass
+                        # The TV can put itself to sleep mid-show (its own idle
+                        # timer), and everything then fails with -10 or a
+                        # timeout. Wake it before reconnecting, or we just log
+                        # errors until the show ends.
+                        if not self.ensure_awake():
+                            self.logger.error("[frame] could not wake mid-show; ending this show")
+                            break
                         tv = self._tv()
                         if tv:
                             art = tv.art()
                             try:
                                 art.select_image(cid, show=True)
                             except Exception as e2:
-                                self.logger.error(f"[frame] select failed after reconnect: {e2}")
+                                self.logger.error(f"[frame] select failed after recovery: {e2}")
                         else:
                             self.logger.error("[frame] reconnect failed")
                             break
