@@ -380,7 +380,15 @@ class ChromecastSlideshowController {
                 opts = { ...opts, body: JSON.stringify(body) };
             } catch (e) { /* not JSON; leave it alone */ }
         }
-        return fetch(url, opts);
+        const response = await fetch(url, opts);
+        // The server refuses zone-less writes from pages that predate zones.
+        // A page left open across an update is exactly that, so reload it
+        // rather than leaving the user pressing buttons that do nothing.
+        if (response.status === 409) {
+            this.logMessage('This page was out of date — reloading…', 'error');
+            setTimeout(() => window.location.reload(true), 800);
+        }
+        return response;
     }
 
     setZone(zone) {

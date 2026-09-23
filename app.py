@@ -21,6 +21,7 @@ monkey.patch_all(subprocess=False, os=False)
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit, join_room
 from flask_cors import CORS
+import functools
 import os
 import threading
 import logging
@@ -67,16 +68,60 @@ schedulers = {
 }
 
 
-def req_zone(default: str = ZONE_BARN) -> str:
-    """Which zone this request is about: ?zone=... or a "zone" field in the body."""
+class StaleClient(Exception):
+    """A request that changes a zone arrived without saying which zone."""
+
+
+def _zone_in_request():
+    """The zone named by ?zone=... or a "zone" field in the body, if any."""
     zone = request.args.get('zone')
     if not zone and request.method in ('POST', 'PUT', 'DELETE'):
         try:
             zone = (request.get_json(silent=True) or {}).get('zone')
         except Exception:
             zone = None
-    zone = (zone or default).lower()
-    return zone if zone in ZONES else default
+    zone = (zone or '').lower()
+    return zone if zone in ZONES else None
+
+
+def req_zone(default: str = ZONE_BARN) -> str:
+    """Which zone a read is about. Falling back to the barn is harmless here:
+    the worst case is showing the wrong zone's data, not changing it."""
+    return _zone_in_request() or default
+
+
+def zone_required(view):
+    """Refuse a state-changing request that does not name its zone.
+
+    Guessing here is what made zone bugs silent and destructive. A page
+    written before zones existed sends no zone at all, and defaulting sent
+    its writes to the barn: loading a playlist into the kitchen quietly
+    replaced the barn's playlist and left the kitchen untouched, so the UI
+    showed the new playlist's name above the old one's shows.
+
+    This runs before the view, and so before the view's own except-Exception
+    block, which would otherwise turn the refusal into an opaque 500.
+    """
+    @functools.wraps(view)
+    def wrapper(*args, **kwargs):
+        if _zone_in_request() is None:
+            logger.warning(f"Rejected zone-less {request.method} {request.path} "
+                           f"from {request.remote_addr} (stale page)")
+            return jsonify({'error': 'This page is out of date — reload it. The '
+                                     'request did not say which zone it was for, '
+                                     'so it was refused rather than applied to '
+                                     'the wrong screens.'}), 409
+        return view(*args, **kwargs)
+    return wrapper
+
+
+def req_zone_strict() -> str:
+    """The zone of a state-changing request. Only ever called from a view
+    wrapped in @zone_required, so the zone is guaranteed to be present."""
+    zone = _zone_in_request()
+    if not zone:
+        raise StaleClient()
+    return zone
 
 
 def zone_scheduler(zone: str) -> PowerScheduler:
@@ -277,10 +322,11 @@ def get_settings():
 
 
 @app.route('/api/settings', methods=['POST'])
+@zone_required
 def save_settings():
     """Save settings from the frontend."""
     data = request.get_json() or {}
-    zone = req_zone()
+    zone = req_zone_strict()
     from settings_manager import ZONE_SCOPED_SETTINGS
 
     for key, value in data.items():
@@ -594,10 +640,11 @@ def get_playlist():
 
 
 @app.route('/api/playlist/items', methods=['POST'])
+@zone_required
 def add_playlist_item():
     """Add current directory to playlist."""
     try:
-        zone = req_zone()
+        zone = req_zone_strict()
         current_dir = settings_manager.get_zone_setting(zone, 'selected_directory') \
             or settings_manager.get_selected_directory()
         if not current_dir:
@@ -676,10 +723,11 @@ def reorder_playlist():
 
 
 @app.route('/api/playlist/clear', methods=['DELETE'])
+@zone_required
 def clear_playlist():
     """Clear all items from the playlist."""
     try:
-        zone = req_zone()
+        zone = req_zone_strict()
         settings_manager.clear_playlist(zone=zone)
         set_loaded(zone, 'playlist', '')
         socketio.emit('playlist_updated')
@@ -690,9 +738,10 @@ def clear_playlist():
 
 
 @app.route('/api/playlist/start', methods=['POST'])
+@zone_required
 def start_playlist():
     """Start playlist mode slideshow, taking over from a single show if one is playing."""
-    zone = req_zone()
+    zone = req_zone_strict()
     if zone == ZONE_KITCHEN:
         result = frame_controller.start()
         if not result.get('success'):
@@ -732,9 +781,10 @@ def start_playlist():
 
 
 @app.route('/api/playlist/pause', methods=['POST'])
+@zone_required
 def pause_playlist():
     """Pause or resume playlist."""
-    if req_zone() == ZONE_KITCHEN:
+    if req_zone_strict() == ZONE_KITCHEN:
         frame_controller.toggle_pause()
         socketio.emit('kitchen_status_update', frame_controller.get_status())
         return jsonify({'status': 'success'})
@@ -752,6 +802,7 @@ def pause_playlist():
 
 
 @app.route('/api/show/play', methods=['POST'])
+@zone_required
 def play_show():
     """Switch to a single show as one atomic server-side operation."""
     data = request.get_json() or {}
@@ -759,7 +810,7 @@ def play_show():
     if not path:
         return jsonify({'error': 'path is required'}), 400
 
-    zone = req_zone()
+    zone = req_zone_strict()
     if zone == ZONE_KITCHEN:
         name = path.rstrip('/').split('/')[-1] or path
         items = [{'directory_path': path, 'directory_name': name,
@@ -785,9 +836,10 @@ def play_show():
 
 
 @app.route('/api/playlist/skip', methods=['POST'])
+@zone_required
 def skip_playlist():
     """Skip to next item in playlist."""
-    if req_zone() == ZONE_KITCHEN:
+    if req_zone_strict() == ZONE_KITCHEN:
         frame_controller.skip()
         return jsonify({'status': 'success'})
     try:
@@ -801,9 +853,10 @@ def skip_playlist():
 
 
 @app.route('/api/playlist/stop', methods=['POST'])
+@zone_required
 def stop_playlist():
     """Stop playlist mode slideshow."""
-    if req_zone() == ZONE_KITCHEN:
+    if req_zone_strict() == ZONE_KITCHEN:
         frame_controller.stop()
         socketio.emit('kitchen_status_update', frame_controller.get_status())
         return jsonify({'status': 'success'})
@@ -840,6 +893,7 @@ def list_saved_playlists():
 
 
 @app.route('/api/saved-playlists', methods=['POST'])
+@zone_required
 def create_saved_playlist():
     """Save the current active playlist under a name."""
     data = request.get_json()
@@ -847,7 +901,7 @@ def create_saved_playlist():
     if not name:
         return jsonify({'error': 'Name is required'}), 400
     try:
-        items = settings_manager.get_playlist_items(zone=req_zone())
+        items = settings_manager.get_playlist_items(zone=req_zone_strict())
         save_items = [
             {k: v for k, v in item.items() if k in ('directory_path', 'directory_name', 'duration_minutes', 'order_index')}
             for item in items
@@ -860,6 +914,7 @@ def create_saved_playlist():
 
 
 @app.route('/api/saved-playlists/<int:playlist_id>', methods=['PUT'])
+@zone_required
 def update_saved_playlist(playlist_id):
     """Overwrite a saved playlist with current active playlist (optionally rename)."""
     data = request.get_json()
@@ -867,7 +922,7 @@ def update_saved_playlist(playlist_id):
     if not name:
         return jsonify({'error': 'Name is required'}), 400
     try:
-        items = settings_manager.get_playlist_items(zone=req_zone())
+        items = settings_manager.get_playlist_items(zone=req_zone_strict())
         save_items = [
             {k: v for k, v in item.items() if k in ('directory_path', 'directory_name', 'duration_minutes', 'order_index')}
             for item in items
@@ -891,13 +946,14 @@ def delete_saved_playlist(playlist_id):
 
 
 @app.route('/api/saved-playlists/<int:playlist_id>/load', methods=['POST'])
+@zone_required
 def load_saved_playlist(playlist_id):
     """Replace the active playlist with a saved playlist."""
     try:
         saved = settings_manager.get_saved_playlist(playlist_id)
         if not saved:
             return jsonify({'error': 'Playlist not found'}), 404
-        zone = req_zone()
+        zone = req_zone_strict()
         settings_manager.clear_playlist(zone=zone)
         for item in saved['items']:
             settings_manager.add_playlist_item(
@@ -961,6 +1017,7 @@ def preview_all_shows():
 
 
 @app.route('/api/playlist/play-all-shows', methods=['POST'])
+@zone_required
 def play_all_shows():
     """Play every show from all saved playlists as a VIRTUAL playlist.
 
@@ -973,7 +1030,7 @@ def play_all_shows():
         if not merged:
             return jsonify({'error': 'No shows found in any saved playlist'}), 400
 
-        zone = req_zone()
+        zone = req_zone_strict()
         if zone == ZONE_KITCHEN:
             frame_controller.stop()
             result = frame_controller.start(items=merged, name=ALL_SHOWS_NAME)
@@ -1013,16 +1070,17 @@ def get_schedule():
 
 
 @app.route('/api/schedule', methods=['POST'])
+@zone_required
 def save_schedule():
     """Save schedule config. Re-evaluates immediately (see PowerScheduler.save_config)."""
     data = request.get_json() or {}
     try:
-        cfg = zone_scheduler(req_zone()).save_config(
+        cfg = zone_scheduler(req_zone_strict()).save_config(
             enabled=bool(data.get('enabled', False)),
             on_time=str(data.get('on_time', '')),
             off_time=str(data.get('off_time', '')),
         )
-        socketio.emit('schedule_status', zone_scheduler(req_zone()).status())
+        socketio.emit('schedule_status', zone_scheduler(req_zone_strict()).status())
         return jsonify(cfg)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
@@ -1032,6 +1090,7 @@ def save_schedule():
 
 
 @app.route('/api/schedule/run/<state>', methods=['POST'])
+@zone_required
 def run_schedule_now(state):
     """Run the on/off sequence immediately — the UI's test buttons.
 
@@ -1039,7 +1098,7 @@ def run_schedule_now(state):
     result back. Can take a while the first time a TV needs to be paired.
     """
     try:
-        return jsonify(zone_scheduler(req_zone()).run_now(state))
+        return jsonify(zone_scheduler(req_zone_strict()).run_now(state))
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     except Exception as e:
