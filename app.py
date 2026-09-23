@@ -238,10 +238,28 @@ def run_discovery_sync(wait_if_busy: float = 20.0) -> bool:
         socketio.emit('discovery_finished')
 
 
+# Cache-buster for static assets. Phones cache app.js aggressively, and a
+# stale copy silently sends requests without a zone — which is how a "Run Off
+# Now" pressed with Kitchen selected turned the barn off instead.
+def _asset_version() -> str:
+    newest = 0.0
+    for rel in ('static/js/app.js', 'static/css/style.css'):
+        try:
+            newest = max(newest, os.path.getmtime(os.path.join(os.path.dirname(__file__), rel)))
+        except OSError:
+            pass
+    return str(int(newest))
+
+
+ASSET_VERSION = _asset_version()
+
+
 @app.route('/')
 def index():
     """Main page with slideshow controls."""
-    return render_template('index.html')
+    response = app.make_response(render_template('index.html', asset_version=ASSET_VERSION))
+    response.headers['Cache-Control'] = 'no-store'
+    return response
 
 
 @app.route('/api/settings', methods=['GET'])
@@ -567,6 +585,12 @@ def add_playlist_item():
             or settings_manager.get_selected_directory()
         if not current_dir:
             return jsonify({'error': 'No directory selected'}), 400
+
+        # Only folders that actually hold images are shows. Without this, a
+        # stray selected_directory (the home folder, say) becomes a playlist
+        # entry that playback can never display.
+        if not slideshow_controller.get_images_in_directory(current_dir):
+            return jsonify({'error': f'No images in "{os.path.basename(current_dir) or current_dir}" — pick a show folder'}), 400
         
         # Get directory name for display
         directory_name = os.path.basename(current_dir) or current_dir

@@ -348,6 +348,14 @@ class ChromecastSlideshowController {
      */
     async refreshPlaybackState() {
         try {
+            // A single show plays outside playlist mode, so playlist status
+            // reports not-running while the screens are very much casting.
+            if (this.zone === 'barn') {
+                try {
+                    const s = await (await this.api('/api/slideshow/status')).json();
+                    this.showPlaying = !!s.running;
+                } catch (e) { /* leave as-is */ }
+            }
             const status = await (await this.api('/api/playlist/status')).json();
             this.updateSlideshowControls(status.running, 'playlist');
             this.updatePlaylistProgress(status);

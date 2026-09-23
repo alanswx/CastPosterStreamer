@@ -53,8 +53,12 @@ class BarnBackend:
             self.discover_fn()
 
         kind = (self.settings_manager.get_zone_setting(ZONE_BARN, "loaded_kind") or "playlist").lower()
+        path = self.settings_manager.get_zone_setting(ZONE_BARN, "selected_directory") or ""
+        if kind == "show" and not os.path.isdir(path):
+            logger.warning(f"[barn] loaded show is missing ({path!r}); using the playlist instead")
+            kind = "playlist"
+
         if kind == "show":
-            path = self.settings_manager.get_zone_setting(ZONE_BARN, "selected_directory") or ""
             res = self.sc.play_single_show(path)
             what = f"show started: {path.rstrip('/').split('/')[-1] or path}"
         elif kind == "all_shows" and self.all_shows_fn:
@@ -117,11 +121,17 @@ class KitchenBackend:
             return {"success": False, "what": "frame unreachable", "error": "could not wake the Frame"}
 
         kind = (self.settings_manager.get_zone_setting(ZONE_KITCHEN, "loaded_kind") or "playlist").lower()
+        path = self.settings_manager.get_zone_setting(ZONE_KITCHEN, "selected_directory") or ""
+        # A loaded show whose folder has gone (or was never set) must not strand
+        # the zone with "no valid shows" — fall back to the playlist.
+        if kind == "show" and not os.path.isdir(path):
+            logger.warning(f"[kitchen] loaded show is missing ({path!r}); using the playlist instead")
+            kind = "playlist"
+
         if kind == "show":
-            path = self.settings_manager.get_zone_setting(ZONE_KITCHEN, "selected_directory") or ""
             name = path.rstrip("/").split("/")[-1] or path
             items = [{"directory_path": path, "directory_name": name,
-                      "duration_minutes": 60, "is_valid": 1 if os.path.isdir(path) else 0,
+                      "duration_minutes": 60, "is_valid": 1,
                       "id": "loaded-show"}]
             res = self.fc.start(items=items, name=name)
             what = f"show started: {name}"

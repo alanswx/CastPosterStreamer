@@ -186,9 +186,12 @@ class SettingsManager:
 
         # Per-zone defaults. The kitchen Frame holds each poster far longer
         # than the barn screens do — it's a picture frame, not a slideshow.
+        # Deliberately no selected_directory default: it used to fall back to
+        # the home folder, and "Add Show" before browsing then added ~ as a
+        # show — a folder with no images that playback retries forever.
         per_zone = {
-            ZONE_BARN: {'slideshow_interval': '5', 'selected_directory': os.path.expanduser('~')},
-            ZONE_KITCHEN: {'slideshow_interval': '300', 'selected_directory': os.path.expanduser('~')},
+            ZONE_BARN: {'slideshow_interval': '5'},
+            ZONE_KITCHEN: {'slideshow_interval': '300'},
         }
         for zone, defaults in per_zone.items():
             for key, value in defaults.items():

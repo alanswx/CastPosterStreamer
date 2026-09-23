@@ -31,6 +31,24 @@ from PIL import Image, ImageOps
 
 logger = logging.getLogger(__name__)
 
+try:
+    import gevent
+    _GEVENT = True
+except ImportError:                     # pragma: no cover
+    _GEVENT = False
+
+
+def _offload(fn, *args, **kwargs):
+    """Run blocking, CPU-bound work off the gevent hub.
+
+    Resizing a 4K image and scanning a /24 are both long enough to starve the
+    event loop — the watchdog caught a 78s freeze that took the whole web UI
+    down with it. gevent's threadpool keeps them on real threads.
+    """
+    if _GEVENT:
+        return gevent.get_hub().threadpool.apply(fn, args, kwargs)
+    return fn(*args, **kwargs)
+
 REST_PORT = 8001
 WS_PORT = 8002
 REMOTE_NAME = "Posters"
@@ -122,6 +140,9 @@ class FrameController:
         self.virtual_items: Optional[List[Dict[str, Any]]] = None
         self.virtual_name: Optional[str] = None
         self._lock = threading.Lock()
+        # Bumped on every start. A loop whose generation is stale exits, so a
+        # stop()/start() pair can never leave two loops driving the same TV.
+        self._generation = 0
 
     # ------------------------------------------------------------- discovery
 
@@ -137,16 +158,22 @@ class FrameController:
 
         base = ".".join((stored or "192.168.4.1").split(".")[:3])
         self.logger.info(f"[frame] locating Frame on {base}.0/24")
+
+        def _reachable(ip):
+            sock = socket.socket()
+            sock.settimeout(0.25)
+            try:
+                sock.connect((ip, REST_PORT))
+                return True
+            except Exception:
+                return False
+            finally:
+                sock.close()
+
         for i in range(1, 255):
             ip = f"{base}.{i}"
-            s = socket.socket()
-            s.settimeout(0.25)
-            try:
-                s.connect((ip, REST_PORT))
-            except Exception:
+            if not _offload(_reachable, ip):
                 continue
-            finally:
-                s.close()
             info = _device_info(ip, timeout=2)
             if info and str(info.get("FrameTVSupport", "")).lower() == "true":
                 self.host, self.mac = ip, info.get("wifiMac")
@@ -310,7 +337,7 @@ class FrameController:
                     ids.append(cid)
                     continue
                 try:
-                    data = prepare_image(path)
+                    data = _offload(prepare_image, path)
                     cid = art.upload(data, file_type="JPEG", matte="none")
                     self._remember_upload(path, cid)
                     ids.append(cid)
@@ -336,45 +363,14 @@ class FrameController:
 
     def _upload_one(self, art, path: str) -> Optional[str]:
         try:
-            cid = art.upload(prepare_image(path), file_type="JPEG", matte="none")
+            data = _offload(prepare_image, path)
+            cid = art.upload(data, file_type="JPEG", matte="none")
             self._remember_upload(path, cid)
             self.logger.info(f"[frame] uploaded {os.path.basename(path)} -> {cid}")
             return cid
         except Exception as e:
             self.logger.error(f"[frame] upload failed for {os.path.basename(path)}: {e}")
             return None
-
-    def _spawn_background_upload(self, paths: List[str], sink: List[str]):
-        """Upload the remainder of a show while it's already playing.
-
-        Uses its own connection: the display loop is using the other one, and
-        sharing a websocket across greenlets corrupts the stream.
-        """
-        def worker():
-            tv = self._tv()
-            if not tv:
-                return
-            try:
-                art = tv.art()
-                for path in paths:
-                    if not self.is_running:
-                        return
-                    cid = self._upload_one(art, path)
-                    if cid:
-                        sink.append(cid)
-                    time.sleep(UPLOAD_GAP_SECONDS)
-            except Exception as e:
-                self.logger.warning(f"[frame] background upload stopped: {e}")
-            finally:
-                try:
-                    tv.close()
-                except Exception:
-                    pass
-
-        if self.socketio:
-            self.socketio.start_background_task(worker)
-        else:
-            threading.Thread(target=worker, daemon=True).start()
 
     # -------------------------------------------------------------- playback
 
@@ -403,11 +399,13 @@ class FrameController:
             self.is_paused = False
             self.skip_requested = False
             self.current_index = 0
+            self._generation += 1
+            generation = self._generation
 
         if self.socketio:
-            self.thread = self.socketio.start_background_task(self._loop)
+            self.thread = self.socketio.start_background_task(self._loop, generation)
         else:
-            self.thread = threading.Thread(target=self._loop, daemon=True)
+            self.thread = threading.Thread(target=self._loop, args=(generation,), daemon=True)
             self.thread.start()
         self.logger.info(f"[frame] started ({len(self._active_items())} shows)")
         return {"success": True}
@@ -416,6 +414,11 @@ class FrameController:
         with self._lock:
             if not self.is_running:
                 return
+            # Invalidate the running loop as well as clearing the flag: start()
+            # may be called immediately afterwards, and without this the old
+            # loop wakes, sees is_running true again and keeps playing its own
+            # stale list alongside the new one.
+            self._generation += 1
             self.is_running = False
             self.is_paused = False
             self.skip_requested = False
@@ -432,22 +435,25 @@ class FrameController:
         with self._lock:
             self.skip_requested = True
 
-    def _sleep(self, seconds: float):
-        """Sleep in small slices so stop/skip are responsive."""
+    def _sleep(self, seconds: float, generation: Optional[int] = None):
+        """Sleep in small slices so stop/skip/restart are responsive."""
         end = time.time() + seconds
         while time.time() < end and self.is_running:
-            if self.skip_requested:
+            if self.skip_requested or (generation is not None and generation != self._generation):
                 return
             time.sleep(min(1.0, max(0.05, end - time.time())))
 
-    def _loop(self):
+    def _alive(self, generation: int) -> bool:
+        return self.is_running and generation == self._generation
+
+    def _loop(self, generation: int = 0):
         items = self._active_items()
         if not items:
             self.is_running = False
             return
 
         failures = 0
-        while self.is_running:
+        while self._alive(generation):
             try:
                 item = items[self.current_index % len(items)]
                 directory = item["directory_path"]
@@ -459,13 +465,13 @@ class FrameController:
                 if not self.ensure_awake():
                     failures += 1
                     self.logger.error("[frame] could not wake; retrying")
-                    self._sleep(min(60, 10 * failures))
+                    self._sleep(min(60, 10 * failures), generation)
                     continue
 
                 tv = self._tv()
                 if not tv:
                     failures += 1
-                    self._sleep(min(60, 5 * failures))
+                    self._sleep(min(60, 5 * failures), generation)
                     continue
                 art = tv.art()
 
@@ -483,8 +489,6 @@ class FrameController:
                     first = self._upload_one(art, pending.pop(0))
                     if first:
                         content_ids.append(first)
-                if content_ids and pending:
-                    self._spawn_background_upload(pending, content_ids)
 
                 if not content_ids:
                     self.logger.error(f"[frame] nothing to show for {directory}, skipping")
@@ -494,7 +498,7 @@ class FrameController:
                     except Exception:
                         pass
                     failures += 1
-                    self._sleep(2 if failures < len(items) else min(60, 10 * failures))
+                    self._sleep(2 if failures < len(items) else min(60, 10 * failures), generation)
                     continue
 
                 failures = 0
@@ -503,25 +507,51 @@ class FrameController:
                 idx = 0
                 interval = self._interval()
 
-                while self.is_running and (time.time() - started) < duration:
+                while self._alive(generation) and (time.time() - started) < duration:
                     if self.skip_requested:
                         break
                     if self.is_paused:
                         time.sleep(1)
                         started += 1      # paused time doesn't count against the show
                         continue
+                    # Fill the rest of the show one image per cycle, on THIS
+                    # connection: the TV accepts only one websocket client, so
+                    # a second uploader connection kills them both.
+                    if pending:
+                        got = self._upload_one(art, pending.pop(0))
+                        if got:
+                            content_ids.append(got)
+
+                    cid = content_ids[idx % len(content_ids)]
                     try:
-                        art.select_image(content_ids[idx % len(content_ids)], show=True)
+                        art.select_image(cid, show=True)
                     except Exception as e:
-                        self.logger.warning(f"[frame] select failed: {e}")
+                        # The TV drops long-lived websockets, so a show lasting
+                        # minutes will lose its connection mid-way. Reconnect
+                        # once and retry rather than skipping the image.
+                        self.logger.warning(f"[frame] select failed ({e}); reconnecting")
+                        try:
+                            tv.close()
+                        except Exception:
+                            pass
+                        tv = self._tv()
+                        if tv:
+                            art = tv.art()
+                            try:
+                                art.select_image(cid, show=True)
+                            except Exception as e2:
+                                self.logger.error(f"[frame] select failed after reconnect: {e2}")
+                        else:
+                            self.logger.error("[frame] reconnect failed")
+                            break
                     idx += 1
                     self._emit_status()
                     # Emit while waiting too: the kitchen interval is minutes,
                     # and a UI that only hears on image change sits blind.
                     waited = 0.0
-                    while waited < interval and self.is_running and not self.skip_requested:
+                    while waited < interval and self._alive(generation) and not self.skip_requested:
                         step = min(15.0, interval - waited)
-                        self._sleep(step)
+                        self._sleep(step, generation)
                         waited += step
                         self._emit_status()
                     interval = self._interval()
@@ -538,7 +568,7 @@ class FrameController:
 
             except Exception as e:
                 self.logger.error(f"[frame] loop error: {e}")
-                self._sleep(5)
+                self._sleep(5, generation)
 
         self._emit_status()
 
