@@ -60,7 +60,7 @@ PANEL_LANDSCAPE = (3840, 2160)
 JPEG_QUALITY = 90
 
 UPLOAD_GAP_SECONDS = 0.5     # consecutive art requests dislike being rushed
-ART_CAPACITY = 200           # our uploads kept on the TV; this LS03R refuses more
+ART_CAPACITY = 260           # our uploads kept on the TV; this LS03R refuses more
                              # past ~310 distinct images (it lists each one twice)
 EVICT_BATCH = 40             # evict in batches so a long show doesn't evict per image
 WAKE_TIMEOUT_SECONDS = 90
