@@ -418,6 +418,7 @@ class ChromecastSlideshowController {
             b.classList.toggle('is-active', b.dataset.zone === zone));
         this.closePicker();
         this.setEditing(false);
+        this._lastStatus = null;
         this.allShowsQueue = null;
         this.selection = { type: 'playlist', name: null, path: null };
         this.logMessage(`Switched to ${zone}`, 'info');
@@ -812,45 +813,44 @@ class ChromecastSlideshowController {
         await this.loadPlaylist();
     }
 
-    /** Reflect the selection (and, while running, what's actually playing). */
     /**
-     * Mark the playing row in the list with a "Now Playing" label and the
-     * time left, and clear it from every other row. There is no separate
-     * current-show panel — the list itself shows what's on.
+     * Mark the playing row: green background, and the time left on the right.
+     * The only place that does — a second highlighter used to handle
+     * playlists alone, so a single show got a label but no background.
+     * Called with a status whenever one arrives; called bare after the list
+     * is rebuilt, when it reuses the last status rather than blanking the
+     * marker until the next one.
      */
     updateNowPlaying(playlistStatus = null) {
+        if (playlistStatus) this._lastStatus = playlistStatus;
+        const status = playlistStatus || this._lastStatus;
         const rows = this.playlistListEl
             ? this.playlistListEl.querySelectorAll('.playlist-item')
             : [];
         if (!rows.length) return;
 
-        const item = playlistStatus && playlistStatus.current_item;
+        const item = status && status.current_item;
         let playingRow = null;
         let label = '';
 
-        if (playlistStatus && playlistStatus.running && item) {
+        if (status && status.running && item) {
             playingRow = this.playlistListEl.querySelector(`[data-item-id="${item.id}"]`);
-            const mins = Math.floor(playlistStatus.time_remaining / 60);
-            const secs = playlistStatus.time_remaining % 60;
+            const mins = Math.floor(status.time_remaining / 60);
+            const secs = status.time_remaining % 60;
             const clock = `${mins}:${String(secs).padStart(2, '0')} left`;
-            label = playlistStatus.paused ? `Now Playing · paused · ${clock}` : `Now Playing · ${clock}`;
+            label = status.paused ? `paused · ${clock}` : clock;
         } else if (this.showPlaying && this.selection.type === 'show') {
             // A single show is casting AND it's the show being listed. The
             // selection check matters: without it, a show left playing while a
-            // playlist is displayed would badge that playlist's first row.
+            // playlist is displayed would mark that playlist's first row.
             playingRow = rows[0];
-            label = 'Now Playing';
         }
 
         rows.forEach(row => {
-            const badge = row.querySelector('.now-playing-badge');
-            if (!badge) return;
-            if (row === playingRow) {
-                badge.textContent = label;
-                badge.style.display = '';
-            } else {
-                badge.style.display = 'none';
-            }
+            const playing = row === playingRow;
+            row.classList.toggle('currently-playing', playing);
+            const time = row.querySelector('.playlist-item-time');
+            if (time) time.textContent = playing ? label : '';
         });
     }
 
@@ -986,7 +986,7 @@ class ChromecastSlideshowController {
         this.pauseSlideshowBtn.disabled = !isRunning;
         this.skipSlideshowBtn.disabled = !isRunning;
 
-        if (!playing) this.updateNowPlaying();
+        if (!playing) { this._lastStatus = null; this.updateNowPlaying(); }
     }
 
     updateCurrentImages(images) {
@@ -1302,8 +1302,8 @@ class ChromecastSlideshowController {
             </div>
             <div class="playlist-item-info">
                 <div class="playlist-item-name">${item.directory_name}${brokenBadge}</div>
-                <span class="now-playing-badge" style="display:none"></span>
             </div>
+            <span class="playlist-item-time"></span>
             ${durationCell}
             ${actionsCell}
         `;
@@ -1759,19 +1759,7 @@ class ChromecastSlideshowController {
     }
 
     highlightCurrentPlaylistItem(status) {
-        // Remove highlighting from all playlist items
-        const allItems = this.playlistListEl.querySelectorAll('.playlist-item');
-        allItems.forEach(item => {
-            item.classList.remove('currently-playing');
-        });
-
-        // Add highlighting to the current item if the playlist is running
-        if (status.running && status.current_item) {
-            const currentItemElement = this.playlistListEl.querySelector(`[data-item-id="${status.current_item.id}"]`);
-            if (currentItemElement) {
-                currentItemElement.classList.add('currently-playing');
-            }
-        }
+        this.updateNowPlaying(status);
     }
 
     // Drag and Drop functionality
