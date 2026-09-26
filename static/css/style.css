@@ -1656,3 +1656,29 @@ body {
 /* Now Playing: no dead space under its list */
 .now-panel .playlist-container { margin-bottom: 0; }
 .now-panel .playlist-list { margin-bottom: 0; }
+
+/* Heavier Start button borders, larger icons */
+.start-actions .start-btn,
+.start-actions .start-btn:hover {
+    border-width: 2px;
+}
+
+.start-btn svg {
+    width: 24px;
+    height: 24px;
+}
+
+/* Rounded green box around the playing show, inset from the list edge so
+   its corners read as rounded rather than clipped by the list's border. */
+.playlist-container .playlist-list .playlist-item.currently-playing,
+.playlist-item.currently-playing {
+    border-radius: 10px;
+    margin: 4px;
+}
+
+/* Without this the rounded green row sat inside the list's grey frame:
+   a box within a box. The rows' own dividers are enough. */
+.now-panel .playlist-list {
+    border: none;
+    border-radius: 0;
+}
