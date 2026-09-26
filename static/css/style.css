@@ -1724,3 +1724,8 @@ body {
 
 /* The picker closes by tapping outside it (or Browse Shows again). */
 #picker-close { display: none; }
+
+/* The Now Playing heading sits in .playlist-header, which carries the gap
+   to the list itself. On phones the generic ".panel h2" margin also landed
+   on the heading, doubling the gap (22px vs Recently Played's 12px). */
+.now-panel .playlist-header h2 { margin: 0; }
