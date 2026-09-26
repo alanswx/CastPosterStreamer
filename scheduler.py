@@ -1,7 +1,9 @@
-"""Daily on/off schedule for the barn screens.
+"""Daily on/off schedule for one zone.
 
-Turns the screens on and starts the current playlist at `schedule_on_time`,
-then stops the show and puts the screens into standby at `schedule_off_time`.
+Turns a zone's screens on and starts whatever it has loaded at
+`schedule_on_time`, then stops playback and puts them into standby at
+`schedule_off_time`. One instance runs per zone; how a zone actually reaches
+its screens lives behind a backend (see zone_backends).
 
 Design notes
 ------------
@@ -10,9 +12,8 @@ Design notes
   once at startup and whenever the settings change).  That makes it survive app
   restarts and missed ticks, gives instant feedback when you enable it, and
   means it never fights a manual stop mid-window.
-* Power ON = start the playlist.  Casting wakes a Chromecast-built-in TV, so no
-  separate wake step is needed (see tv_power.py for why not Wake-on-LAN).
-* Power OFF = stop the show, then KEY_POWER each enabled screen (tv_power.py).
+* Waking differs per zone and is the backend's problem: casting wakes the barn
+  QLEDs, while the Frame needs Wake-on-LAN and a long power press to sleep.
 * Runs as a gevent background task via socketio.start_background_task, so all
   the blocking calls below are cooperative and never freeze the hub.
 """
@@ -23,8 +24,6 @@ import threading
 import time
 from datetime import datetime
 from typing import Any, Dict, Optional
-
-import tv_power
 
 logger = logging.getLogger(__name__)
 
@@ -39,18 +38,13 @@ _HHMM = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 
 
 class PowerScheduler:
-    def __init__(self, settings_manager, slideshow_controller, socketio,
-                 discover_fn=None, all_shows_fn=None):
+    def __init__(self, settings_manager, socketio, zone, backend):
         self.settings_manager = settings_manager
-        self.slideshow_controller = slideshow_controller
         self.socketio = socketio
-        # Runs Chromecast discovery synchronously; see app.run_discovery_sync.
-        # Needed because nothing discovers the screens at startup, so after a
-        # reboot the playlist can't start until something does.
-        self.discover_fn = discover_fn
-        # Builds the merged All Shows list, for when that's what's loaded.
-        self.all_shows_fn = all_shows_fn
-        self.token_dir = settings_manager.app_support_dir / "tv_tokens"
+        self.zone = zone
+        # Per-zone adapter; see zone_backends. Keeps this class from knowing
+        # whether a screen is cast to or uploaded to.
+        self.backend = backend
 
         self._lock = threading.Lock()          # monkey-patched -> gevent-safe
         self._running = False
@@ -61,10 +55,12 @@ class PowerScheduler:
 
     def get_config(self) -> Dict[str, Any]:
         sm = self.settings_manager
+        z = self.zone
         return {
-            "enabled": (sm.get_setting("schedule_enabled") or "false").lower() == "true",
-            "on_time": sm.get_setting("schedule_on_time") or DEFAULT_ON_TIME,
-            "off_time": sm.get_setting("schedule_off_time") or DEFAULT_OFF_TIME,
+            "zone": z,
+            "enabled": (sm.get_zone_setting(z, "schedule_enabled") or "false").lower() == "true",
+            "on_time": sm.get_zone_setting(z, "schedule_on_time") or DEFAULT_ON_TIME,
+            "off_time": sm.get_zone_setting(z, "schedule_off_time") or DEFAULT_OFF_TIME,
         }
 
     def save_config(self, enabled: bool, on_time: str, off_time: str) -> Dict[str, Any]:
@@ -72,10 +68,11 @@ class PowerScheduler:
             if not _HHMM.match(value or ""):
                 raise ValueError(f"{label} must be HH:MM (24h), got {value!r}")
         sm = self.settings_manager
-        sm.save_setting("schedule_enabled", "true" if enabled else "false")
-        sm.save_setting("schedule_on_time", on_time)
-        sm.save_setting("schedule_off_time", off_time)
-        logger.info(f"[schedule] config saved: enabled={enabled} on={on_time} off={off_time}")
+        z = self.zone
+        sm.save_zone_setting(z, "schedule_enabled", "true" if enabled else "false")
+        sm.save_zone_setting(z, "schedule_on_time", on_time)
+        sm.save_zone_setting(z, "schedule_off_time", off_time)
+        logger.info(f"[schedule:{z}] config saved: enabled={enabled} on={on_time} off={off_time}")
 
         # Re-evaluate right away rather than waiting for the next tick.
         self._last_applied = None
@@ -123,9 +120,8 @@ class PowerScheduler:
         }
 
     def power_states(self) -> Dict[str, Optional[str]]:
-        """Live PowerState for every enabled screen (for the UI)."""
-        return {d["name"]: tv_power.get_power_state(d["host"])
-                for d in self.settings_manager.get_enabled_devices()}
+        """Live state of this zone's screens (for the UI)."""
+        return self.backend.verify("on")
 
     # ------------------------------------------------------------------- loop
 
@@ -134,7 +130,7 @@ class PowerScheduler:
             return
         self._running = True
         self.socketio.start_background_task(self._loop)
-        logger.info("[schedule] scheduler started")
+        logger.info(f"[schedule:{self.zone}] scheduler started")
 
     def stop(self):
         self._running = False
@@ -145,7 +141,7 @@ class PowerScheduler:
             try:
                 self.reconcile("tick")
             except Exception as e:
-                logger.error(f"[schedule] reconcile error: {e}")
+                logger.error(f"[schedule:{self.zone}] reconcile error: {e}")
             time.sleep(TICK_SECONDS)
 
     def reconcile(self, reason: str = "tick"):
@@ -158,7 +154,7 @@ class PowerScheduler:
                 return
             # Claim the state *before* the slow apply so a reconcile that arrives
             # while this one is still running sees it as already handled.
-            logger.info(f"[schedule] desired={desired}, last applied={self._last_applied} ({reason})")
+            logger.info(f"[schedule:{self.zone}] desired={desired}, last applied={self._last_applied} ({reason})")
             self._last_applied = desired
             self._apply(desired, reason)
 
@@ -194,77 +190,46 @@ class PowerScheduler:
         result["at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._last_action = result
         ok = "OK" if result["ok"] else "PROBLEM"
-        logger.info(f"[schedule] {state.upper()} ({reason}) -> {ok} in {result['duration_s']}s: {result['screens']}")
+        logger.info(f"[schedule:{self.zone}] {state.upper()} ({reason}) -> {ok} in {result['duration_s']}s: {result['screens']}")
         self.socketio.emit("schedule_status", self.status())
         return result
 
     def _do_on(self, reason: str) -> Dict[str, Any]:
-        sc = self.slideshow_controller
-        result: Dict[str, Any] = {"action": "on", "reason": reason, "ok": False, "show": None, "screens": {}}
+        result: Dict[str, Any] = {"action": "on", "reason": reason, "ok": False,
+                                  "show": None, "screens": {}}
 
-        if sc.is_playlist_running or sc.is_slideshow_running:
+        if self.backend.is_playing():
             result["show"] = "already running"
         else:
-            if not sc.chromecast_manager.get_enabled_devices() and self.discover_fn:
-                logger.info("[schedule] no screens known yet, running discovery first")
-                result["discovery"] = "ran" if self.discover_fn() else "failed"
-                if not sc.chromecast_manager.get_enabled_devices():
-                    logger.error("[schedule] discovery found no enabled screens")
-
-            # Start whatever the user last loaded — a single show or the
-            # playlist — rather than always forcing the playlist.
-            kind = (self.settings_manager.get_setting("loaded_kind") or "playlist").lower()
-            if kind == "show":
-                path = self.settings_manager.get_selected_directory()
-                label = path.rstrip("/").split("/")[-1] or path
-                res = sc.play_single_show(path)
-                started, what = res.get("success"), f"show started: {label}"
-            elif kind == "all_shows" and self.all_shows_fn:
-                items = self.all_shows_fn()
-                res = sc.start_playlist(items=items, name="All Shows") if items \
-                    else {"success": False, "error": "no shows in any saved playlist"}
-                started, what = res.get("success"), f"all shows started ({len(items)} shows)"
+            res = self.backend.start_loaded()
+            if res.get("success"):
+                result["show"] = res["what"]
             else:
-                res = sc.play_current_playlist()
-                started, what = res.get("success"), "playlist started"
-
-            if started:
-                result["show"] = what
-                self.socketio.emit("playlist_started")
-                self.socketio.emit("playlist_status_update", sc.get_playlist_status())
-            else:
-                result["show"] = f"could not start ({kind}): {res.get('error')}"
-                logger.error(f"[schedule] {result['show']}")
+                result["show"] = f"could not start: {res.get('error')}"
+                logger.error(f"[schedule:{self.zone}] {result['show']}")
                 # Still verify below — the screens may have been on already.
 
-        # Casting wakes the TVs; give the panels a moment before checking.
-        time.sleep(WAKE_SETTLE_SECONDS)
-        for d in self.settings_manager.get_enabled_devices():
-            result["screens"][d["name"]] = tv_power.wait_for_state(d["host"], "on", timeout=VERIFY_TIMEOUT_SECONDS)
-
-        result["ok"] = bool(result["screens"]) and all(s == "on" for s in result["screens"].values()) \
+        result["screens"] = self.backend.verify("on")
+        result["ok"] = bool(result["screens"]) \
+            and all(s == "on" for s in result["screens"].values()) \
             and not str(result["show"]).startswith("could not")
         return result
 
     def _do_off(self, reason: str) -> Dict[str, Any]:
-        sc = self.slideshow_controller
-        result: Dict[str, Any] = {"action": "off", "reason": reason, "ok": False, "show": None, "screens": {}, "errors": {}}
+        result: Dict[str, Any] = {"action": "off", "reason": reason, "ok": False,
+                                  "show": None, "screens": {}, "errors": {}}
 
-        was_running = sc.is_playlist_running or sc.is_slideshow_running
-        sc.stop_playlist()
-        sc.stop_slideshow()
+        was_running = self.backend.is_playing()
+        self.backend.stop()
         result["show"] = "stopped" if was_running else "was not running"
-        self.socketio.emit("playlist_stopped")
-        self.socketio.emit("playlist_status_update", sc.get_playlist_status())
         time.sleep(1)
 
-        devices = self.settings_manager.get_enabled_devices()
-        for d in devices:
-            r = tv_power.power_off(d["host"], d["uuid"], self.token_dir, d["name"])
-            if r["error"]:
-                result["errors"][d["name"]] = r["error"]
-        for d in devices:
-            result["screens"][d["name"]] = tv_power.wait_for_state(d["host"], "standby", timeout=VERIFY_TIMEOUT_SECONDS)
+        off = self.backend.power_off()
+        result["errors"] = off.get("errors", {})
+        result["screens"] = self.backend.verify("off")
 
-        result["ok"] = bool(devices) and all(s == "standby" for s in result["screens"].values())
+        # "Off" means standby, or gone from the network entirely — a Frame in
+        # true standby stops answering, which is success rather than failure.
+        result["ok"] = bool(result["screens"]) and all(
+            s in ("standby", None) for s in result["screens"].values())
         return result

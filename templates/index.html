@@ -2,69 +2,78 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>Virtual Poster Display</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v=asset_version) }}">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
 </head>
 <body>
     <div class="container">
         <header>
             <h1>Virtual Poster Display</h1>
+            <div class="zone-toggle" id="zone-toggle">
+                <button class="zone-btn is-active" data-zone="barn">Barn</button>
+                <button class="zone-btn" data-zone="kitchen">Kitchen</button>
+            </div>
         </header>
 
         <main>
-            <!-- Player controls: no panel chrome, just centred under the title -->
-            <!-- Inline SVG rather than unicode glyphs: ⏸ ⏭ ⏹ default to emoji
-                 presentation, which iOS renders in fixed colours and ignores
-                 CSS `color` on. SVG with currentColor behaves everywhere. -->
-            <div class="player-buttons">
-                <button id="start-playlist" class="icon-btn icon-play" title="Play">
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+            <!-- The two things you do most, at the top. Starting replaces
+                 whatever is playing. The picker opens right beneath. -->
+            <div class="start-actions playlist-actions">
+                <button id="load-show" class="btn start-btn">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm0 2v10.6l3.5-3.5 2.5 2.5 4-4 4 4V5H5zm4 1.5A1.5 1.5 0 1 1 9 9.5a1.5 1.5 0 0 1 0-3z"/></svg>
+                    <span>Browse Shows</span>
                 </button>
-                <button id="pause-slideshow" class="icon-btn icon-pause" title="Pause" disabled>
-                    <svg class="ic-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>
-                    <svg class="ic-resume" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
-                </button>
-                <button id="skip-slideshow" class="icon-btn icon-skip" title="Skip" disabled>
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14l9-7zm11 0h3v14h-3z"/></svg>
-                </button>
-                <button id="stop-slideshow" class="icon-btn icon-stop" title="Stop" disabled>
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6h12v12H6z"/></svg>
-                </button>
-                <input type="checkbox" id="rotation-enabled" checked style="display:none">
+                <div class="load-playlist-wrapper">
+                    <button id="load-playlist" class="btn start-btn">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h12v2H3zm0 4h12v2H3zm0 4h8v2H3zm13 0v6l5-3z"/></svg>
+                        <span>Browse Playlists</span>
+                    </button>
+                    <div id="load-playlist-dropdown" class="playlist-dropdown" style="display:none"></div>
+                </div>
             </div>
 
-            <!-- Now Playing / Up Next Section (picker lives inside) -->
-            <section class="panel">
+            <!-- Collapsible show picker -->
+            <div id="show-picker" class="show-picker" style="display:none">
+                <div class="picker-header">
+                    <span id="picker-title" class="picker-title">Choose a show</span>
+                    <button id="picker-close" class="btn btn-secondary btn-sm" title="Close picker">✕</button>
+                </div>
+                <div class="directory-list" id="directory-list"></div>
+                <span id="current-path" style="display:none"></span>
+                <span id="directory-thumbnails" style="display:none"></span>
+            </div>
+
+            <!-- Now Playing -->
+            <section class="panel now-panel">
                 <div class="playlist-header">
                     <h2><span id="playlist-label">Now Playing:</span> <span id="playlist-name">New Playlist</span><span id="playlist-dirty" class="dirty-indicator" style="display:none"> *</span></h2>
-                    <div class="playlist-actions">
-                        <button id="load-show" class="btn btn-secondary btn-sm">Load Show</button>
-                        <div class="load-playlist-wrapper">
-                            <button id="load-playlist" class="btn btn-secondary btn-sm">Load Playlist ▾</button>
-                            <div id="load-playlist-dropdown" class="playlist-dropdown" style="display:none"></div>
-                        </div>
-                        <button id="add-show" class="btn btn-secondary btn-sm">Add Show</button>
-                        <button id="save-playlist" class="btn btn-secondary btn-sm">Save Playlist</button>
-                    </div>
                 </div>
 
-                <!-- Collapsible show picker -->
-                <div id="show-picker" class="show-picker" style="display:none">
-                    <div class="picker-header">
-                        <span id="picker-title" class="picker-title">Choose a show</span>
-                        <button id="picker-close" class="btn btn-secondary btn-sm" title="Close picker">✕</button>
-                    </div>
-                    <div class="directory-list" id="directory-list"></div>
-                    <span id="current-path" style="display:none"></span>
-                    <span id="directory-thumbnails" style="display:none"></span>
+                <!-- Playlist editing tools, hidden until "Edit playlist" is
+                     chosen from the Start Playlist menu: they're rarely needed
+                     and cost a whole row on a phone. -->
+                <div id="playlist-edit-bar" class="playlist-edit-bar" style="display:none">
+                    <span class="playlist-edit-label">Editing playlist</span>
+                    <button id="add-show" class="btn btn-secondary btn-sm">+ Add Show</button>
+                    <button id="save-playlist" class="btn btn-secondary btn-sm">Save Playlist</button>
+                    <button id="playlist-edit-done" class="btn btn-primary btn-sm">Done</button>
                 </div>
 
                 <div class="playlist-container">
                     <div class="playlist-list" id="playlist-list">
-                        <div class="no-playlist-items">Nothing loaded. Use "Load Show" or "Load Playlist" above.</div>
+                        <div class="no-playlist-items">Nothing playing. Use "Browse Shows" or "Browse Playlists" above.</div>
                     </div>
+                </div>
+            </section>
+
+            <!-- Recently Played: shows this zone has put on screen, newest
+                 first. Tapping one plays it again. -->
+            <section class="panel recent-panel">
+                <h2>Recently Played</h2>
+                <div class="recent-list" id="recent-list">
+                    <div class="no-playlist-items">Nothing played yet.</div>
                 </div>
             </section>
 
@@ -158,6 +167,29 @@
         </main>
     </div>
 
-    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+    <!-- Transport, in a bar fixed to the bottom of the screen.
+         Inline SVG rather than unicode glyphs: ⏸ ⏭ ⏹ default to emoji
+         presentation, which iOS renders in fixed colours and ignores CSS
+         `color` on. SVG with currentColor behaves everywhere. -->
+    <nav class="player-bar" aria-label="Playback">
+        <div class="player-buttons">
+            <button id="start-playlist" class="icon-btn icon-play" title="Play">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+            </button>
+            <button id="pause-slideshow" class="icon-btn icon-pause" title="Pause" disabled>
+                <svg class="ic-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>
+                <svg class="ic-resume" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+            </button>
+            <button id="skip-slideshow" class="icon-btn icon-skip" title="Skip" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14l9-7zm11 0h3v14h-3z"/></svg>
+            </button>
+            <button id="stop-slideshow" class="icon-btn icon-stop" title="Stop" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6h12v12H6z"/></svg>
+            </button>
+            <input type="checkbox" id="rotation-enabled" checked style="display:none">
+        </div>
+    </nav>
+
+    <script src="{{ url_for('static', filename='js/app.js', v=asset_version) }}"></script>
 </body>
 </html>

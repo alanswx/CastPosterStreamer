@@ -174,6 +174,7 @@ class SlideshowController:
             self.slideshow_thread = gevent.spawn(self._slideshow_loop)
         
         self.logger.info(f"Started slideshow with {len(images)} images and {len(enabled_devices)} devices")
+        self._record_play(directory)
         if self.socketio:
             self.socketio.emit('slideshow_status', {
                 'running': True,
@@ -568,6 +569,7 @@ class SlideshowController:
 
                 consecutive_failures = 0
                 retry_delay = 0
+                self._record_play(directory, current_item['directory_name'])
 
                 # Reset timing
                 item_start_time = time.time()
@@ -703,11 +705,27 @@ class SlideshowController:
         """
         self.stop_playlist()
         self.stop_slideshow()
-        self.settings_manager.save_setting('selected_directory', directory)
+        # The barn's own key: start_slideshow() reads it back through
+        # get_selected_directory(), which looks at "barn.selected_directory"
+        # first. Writing the bare key left that stale, so every show loaded
+        # as whatever had last been stored there.
+        from settings_manager import ZONE_BARN
+        self.settings_manager.save_zone_setting(ZONE_BARN, 'selected_directory', directory)
 
         if self.start_slideshow():
             return {'success': True}
         return {'success': False, 'error': f'Could not start show: {directory}'}
+
+    def _record_play(self, directory: str, name: str = None):
+        """Add a show to the barn's Recently Played, once it is really on
+        the screens. Never allowed to disturb playback."""
+        from settings_manager import ZONE_BARN
+        try:
+            self.settings_manager.record_play(ZONE_BARN, directory, name)
+            if self.socketio:
+                self.socketio.emit('recent_updated', {'zone': ZONE_BARN})
+        except Exception as e:
+            self.logger.warning(f"Could not record play history: {e}")
 
     def _active_items(self) -> List[Dict[str, Any]]:
         """Items currently being played: the virtual list if one is active,

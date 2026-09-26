@@ -877,7 +877,7 @@ header h1 {
 }
 
 .show-picker .directory-list {
-    max-height: 220px;
+    max-height: 440px;   /* ~7 shows */
     overflow-y: auto;
 }
 
@@ -1300,7 +1300,7 @@ header h1 {
 
     /* Picker scrolls within itself rather than burying the list */
     .show-picker { padding: 0.5rem; }
-    .show-picker .directory-list { max-height: 150px; }
+    .show-picker .directory-list { max-height: 440px; }
     .directory-item { padding: 0.5rem; font-size: 0.88rem; }
 
     .picker-header { gap: 0.35rem; }
@@ -1342,3 +1342,390 @@ header h1 {
     .log-container { max-height: 160px; }
     #connection-status { font-size: 0.68rem; }
 }
+
+/* Zone switch: which set of screens everything below refers to */
+.zone-toggle {
+    display: inline-flex;
+    margin-top: 0.6rem;
+    border: 1px solid #d8dde2;
+    border-radius: 999px;
+    overflow: hidden;
+    background: #f4f6f8;
+}
+
+.zone-btn {
+    border: none;
+    background: none;
+    padding: 0.3rem 1.1rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #7f8c8d;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.zone-btn:hover:not(.is-active) { color: #2c3e50; }
+
+.zone-btn.is-active {
+    background: #3498db;
+    color: #fff;
+}
+
+/* Recently Played: tap a row to play that show again */
+.recent-list {
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background: white;
+}
+
+.recent-item {
+    display: flex;
+    align-items: center;
+    padding: 0.6rem 0.75rem;
+    border-bottom: 1px solid #eee;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.recent-item:last-child { border-bottom: none; }
+.recent-item:hover { background: #f4f9fd; }
+.recent-item:active { background: #e8f2fb; }
+
+.recent-item-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.recent-item-info .playlist-item-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.recent-item-when {
+    font-size: 0.8rem;
+    color: #95a5a6;
+    margin-top: 0.15rem;
+}
+
+.recent-item-play {
+    color: #27ae60;
+    font-size: 1.1rem;
+    margin-left: 0.75rem;
+}
+
+.recent-item.recent-missing {
+    cursor: default;
+    opacity: 0.5;
+}
+
+.recent-item.recent-missing:hover { background: white; }
+.recent-item.recent-missing .recent-item-play { display: none; }
+
+/* Playlist editing bar: hidden until "Edit playlist" is chosen */
+.playlist-edit-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    margin: 0.5rem 0 0.75rem;
+    padding: 0.5rem 0.6rem;
+    background: #fdf6e3;
+    border: 1px solid #f0e0b0;
+    border-radius: 6px;
+}
+
+.playlist-edit-label {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #8a6d1f;
+    margin-right: auto;
+}
+
+.playlist-dropdown-edit {
+    color: #8a6d1f;
+    font-weight: 500;
+}
+
+@media (max-width: 640px) {
+    .playlist-edit-label { flex-basis: 100%; }
+    .playlist-edit-bar .btn { flex: 1; margin: 0; }
+}
+
+/* Row controls only while editing the playlist */
+.playlist-list:not(.editing) .playlist-item-duration,
+.playlist-list:not(.editing) .playlist-item-actions,
+.playlist-list:not(.editing) .playlist-item-drag-handle {
+    display: none;
+}
+
+.playlist-list:not(.editing) .playlist-item {
+    cursor: default;
+}
+
+/* Bigger show and playlist names; time left sits at the right of the
+   playing row instead of in a badge under the name. */
+.playlist-item-name {
+    font-size: 1.1rem;
+}
+
+.playlist-item-time {
+    margin-left: 0.75rem;
+    color: #27ae60;
+    font-size: 0.9rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.playlist-item-time:empty { display: none; }
+
+.playlist-dropdown-item-name {
+    font-size: 1.05rem;
+}
+
+@media (max-width: 640px) {
+    .playlist-item-name { font-size: 1.05rem; }
+    .playlist-item-time { font-size: 0.82rem; margin-left: 0.5rem; }
+}
+
+/* Larger thumbnails in both lists, and a bigger play arrow in Recently
+   Played; its names match Now Playing's now that the time line is gone. */
+.playlist-item-thumbnail {
+    width: 60px;
+    height: 60px;
+}
+
+.recent-item-play {
+    width: 34px;
+    height: 34px;
+    flex: 0 0 auto;
+    fill: currentColor;
+}
+
+@media (max-width: 640px) {
+    .playlist-item-thumbnail,
+    .playlist-item-thumbnail img {
+        width: 52px;
+        height: 52px;
+    }
+    .recent-item-play { width: 32px; height: 32px; }
+}
+
+/* Load Show / Load Playlist: a little larger than other small buttons */
+.playlist-actions .btn {
+    font-size: 0.95rem;
+    padding: 0.3rem 0.7rem;
+}
+
+/* ---------------------------------------------------------------------------
+   Start Show / Start Playlist at the top; transport in a bar fixed to the
+   bottom of the screen, like a music app's mini player.
+   ------------------------------------------------------------------------ */
+.start-actions {
+    display: flex;
+    justify-content: center;
+    gap: 0.6rem;
+    margin: 0 0 1rem;
+}
+
+.start-actions .btn {
+    font-size: 1.05rem;
+    font-weight: 600;
+    padding: 0.55rem 1.4rem;
+    margin: 0;
+}
+
+/* The picker now sits outside the panel, so give it the panel's ground. */
+.show-picker {
+    background: white;
+}
+
+.player-bar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 50;
+    background: rgba(255, 255, 255, 0.94);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    border-top: 1px solid #dfe3e7;
+    box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.06);
+    /* Clear the iPhone home indicator. */
+    padding: 0.35rem 0 calc(0.35rem + env(safe-area-inset-bottom));
+}
+
+.player-bar .player-buttons {
+    max-width: 480px;
+    margin: 0 auto;
+    display: flex;
+    justify-content: space-evenly;
+    gap: 0;
+}
+
+.player-bar .icon-btn svg {
+    width: 34px;
+    height: 34px;
+}
+
+/* Keep the last panel scrollable out from under the bar. */
+body {
+    padding-bottom: calc(64px + env(safe-area-inset-bottom));
+}
+
+@media (max-width: 640px) {
+    .start-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.5rem;
+        margin-bottom: 0.9rem;
+    }
+    .start-actions .btn { width: 100%; padding: 0.6rem 0.5rem; font-size: 1rem; }
+    .player-bar .player-buttons { margin: 0 auto; }
+    .player-bar .icon-btn svg { width: 32px; height: 32px; }
+}
+
+/* Now Playing and Recently Played: no rule under the heading — the list
+   below already marks the boundary. */
+.now-panel .playlist-header,
+.recent-panel h2 {
+    border-bottom: none;
+    padding-bottom: 0;
+}
+
+.now-panel .playlist-header { margin-bottom: 0.75rem; }
+.recent-panel h2 { margin-bottom: 0.75rem; }
+
+/* Start Show / Start Playlist: the page's two main actions */
+.start-actions .start-btn,
+.start-actions .start-btn:hover {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.7rem 1.4rem;
+    border: 1px solid #dfe3e8;
+    border-radius: 12px;
+    background: #fff;
+    color: #2c3e50;
+    font-size: 1.05rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    cursor: pointer;
+    transition: transform 0.08s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+.start-actions .start-btn:hover {
+    background: #f7f9fb;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.start-actions .start-btn:active {
+    transform: translateY(1px) scale(0.98);
+    background: #eef2f5;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.start-btn svg { color: #5d6d7e; }
+
+.start-btn svg {
+    width: 20px;
+    height: 20px;
+    fill: currentColor;
+    flex: 0 0 auto;
+}
+
+.start-btn .start-btn-caret {
+    width: 18px;
+    height: 18px;
+    margin-left: -0.2rem;
+    opacity: 0.85;
+}
+
+@media (max-width: 640px) {
+    .start-actions .start-btn,
+    .start-actions .start-btn:hover {
+        width: 100%;
+        padding: 0.75rem 0.5rem;
+        font-size: 1rem;
+    }
+}
+
+/* Now Playing: no dead space under its list */
+.now-panel .playlist-container { margin-bottom: 0; }
+.now-panel .playlist-list { margin-bottom: 0; }
+
+/* Heavier Start button borders, larger icons */
+.start-actions .start-btn,
+.start-actions .start-btn:hover {
+    border-width: 2px;
+}
+
+.start-btn svg {
+    width: 24px;
+    height: 24px;
+}
+
+/* Rounded green box around the playing show. No margin: the Now Playing
+   list has no frame to clip its corners, and a margin left the panel with
+   more space below its list than Recently Played has. */
+.playlist-container .playlist-list .playlist-item.currently-playing,
+.playlist-item.currently-playing {
+    border-radius: 10px;
+}
+
+/* Without this the rounded green row sat inside the list's grey frame:
+   a box within a box. The rows' own dividers are enough. */
+.now-panel .playlist-list {
+    border: none;
+    border-radius: 0;
+}
+
+/* Recently Played's list has a 1px frame; match its gap exactly. */
+.now-panel .playlist-list { padding-bottom: 1px; }
+
+/* Start buttons: heavier outline */
+.start-actions .start-btn,
+.start-actions .start-btn:hover {
+    border-width: 3px;
+}
+
+/* No row numbers: the order is plain from the list itself */
+.playlist-item-number,
+.playlist-item.currently-playing .playlist-item-number { display: none; }
+
+/* Thumbnails a step larger again (was 60px / 52px on phones) */
+.playlist-item-thumbnail {
+    width: 72px;
+    height: 72px;
+}
+
+@media (max-width: 640px) {
+    .playlist-item-thumbnail,
+    .playlist-item-thumbnail img {
+        width: 64px;
+        height: 64px;
+    }
+}
+
+/* Phones: "Browse Playlists" must fit on one line in a half-width button */
+@media (max-width: 640px) {
+    .start-actions .start-btn,
+    .start-actions .start-btn:hover {
+        white-space: nowrap;
+        gap: 0.35rem;
+        padding: 0.75rem 0.35rem;
+        font-size: 0.95rem;
+    }
+    .start-btn svg { width: 21px; height: 21px; }
+}
+
+/* The picker closes by tapping outside it (or Browse Shows again). */
+#picker-close { display: none; }
+
+/* The Now Playing heading sits in .playlist-header, which carries the gap
+   to the list itself. On phones the generic ".panel h2" margin also landed
+   on the heading, doubling the gap (22px vs Recently Played's 12px). */
+.now-panel .playlist-header h2 { margin: 0; }
