@@ -1205,10 +1205,12 @@ class ChromecastSlideshowController {
 
             if (this.isVirtualPlaylist) {
                 this.playlistItems = data.items || [];
-                this.playlistLabelEl.textContent = 'Now Playing:';
-                this.playlistNameEl.textContent = data.virtual_kind === 'show'
-                    ? (data.virtual_name || (data.items[0] && data.items[0].directory_name) || '')
-                    : `(Playlist) ${data.virtual_name || 'All Shows'}`;
+                if (data.virtual_kind === 'show') {
+                    this.setShowHeading();
+                } else {
+                    this.playlistLabelEl.textContent = 'Now Playing:';
+                    this.playlistNameEl.textContent = `(Playlist) ${data.virtual_name || 'All Shows'}`;
+                }
                 this.playlistDirtyEl.style.display = 'none';
             } else if (this.selection.type === 'all-shows' && this.allShowsQueue) {
                 // All Shows loaded but not yet playing.
@@ -1225,8 +1227,7 @@ class ChromecastSlideshowController {
                     duration_minutes: null,
                     is_valid: 1
                 }];
-                this.playlistLabelEl.textContent = 'Now Playing:';
-                this.playlistNameEl.textContent = this.selection.name;
+                this.setShowHeading();
                 this.playlistDirtyEl.style.display = 'none';
             } else {
                 // Name and items come from the one response, so the heading
@@ -1246,6 +1247,13 @@ class ChromecastSlideshowController {
         } catch (error) {
             this.logMessage(`Error loading playlist: ${error.message}`, 'error');
         }
+    }
+
+    /** A single show's name is already the one row below, so the heading
+     *  just says "Now Playing"; only a playlist's name adds anything. */
+    setShowHeading() {
+        this.playlistLabelEl.textContent = 'Now Playing';
+        this.playlistNameEl.textContent = '';
     }
 
     updatePlaylistDisplay() {
