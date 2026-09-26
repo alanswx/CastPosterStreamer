@@ -1695,3 +1695,17 @@ body {
 /* No row numbers: the order is plain from the list itself */
 .playlist-item-number,
 .playlist-item.currently-playing .playlist-item-number { display: none; }
+
+/* Thumbnails a step larger again (was 60px / 52px on phones) */
+.playlist-item-thumbnail {
+    width: 72px;
+    height: 72px;
+}
+
+@media (max-width: 640px) {
+    .playlist-item-thumbnail,
+    .playlist-item-thumbnail img {
+        width: 64px;
+        height: 64px;
+    }
+}
