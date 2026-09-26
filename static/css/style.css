@@ -877,7 +877,7 @@ header h1 {
 }
 
 .show-picker .directory-list {
-    max-height: 220px;
+    max-height: 440px;   /* ~7 shows */
     overflow-y: auto;
 }
 
@@ -1300,7 +1300,7 @@ header h1 {
 
     /* Picker scrolls within itself rather than burying the list */
     .show-picker { padding: 0.5rem; }
-    .show-picker .directory-list { max-height: 150px; }
+    .show-picker .directory-list { max-height: 440px; }
     .directory-item { padding: 0.5rem; font-size: 0.88rem; }
 
     .picker-header { gap: 0.35rem; }
@@ -1341,4 +1341,179 @@ header h1 {
     .device-list { max-height: 200px; }
     .log-container { max-height: 160px; }
     #connection-status { font-size: 0.68rem; }
+}
+
+/* Zone switch: which set of screens everything below refers to */
+.zone-toggle {
+    display: inline-flex;
+    margin-top: 0.6rem;
+    border: 1px solid #d8dde2;
+    border-radius: 999px;
+    overflow: hidden;
+    background: #f4f6f8;
+}
+
+.zone-btn {
+    border: none;
+    background: none;
+    padding: 0.3rem 1.1rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #7f8c8d;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.zone-btn:hover:not(.is-active) { color: #2c3e50; }
+
+.zone-btn.is-active {
+    background: #3498db;
+    color: #fff;
+}
+
+/* Recently Played: tap a row to play that show again */
+.recent-list {
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background: white;
+}
+
+.recent-item {
+    display: flex;
+    align-items: center;
+    padding: 0.6rem 0.75rem;
+    border-bottom: 1px solid #eee;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.recent-item:last-child { border-bottom: none; }
+.recent-item:hover { background: #f4f9fd; }
+.recent-item:active { background: #e8f2fb; }
+
+.recent-item-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.recent-item-info .playlist-item-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.recent-item-when {
+    font-size: 0.8rem;
+    color: #95a5a6;
+    margin-top: 0.15rem;
+}
+
+.recent-item-play {
+    color: #27ae60;
+    font-size: 1.1rem;
+    margin-left: 0.75rem;
+}
+
+.recent-item.recent-missing {
+    cursor: default;
+    opacity: 0.5;
+}
+
+.recent-item.recent-missing:hover { background: white; }
+.recent-item.recent-missing .recent-item-play { display: none; }
+
+/* Playlist editing bar: hidden until "Edit playlist" is chosen */
+.playlist-edit-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    margin: 0.5rem 0 0.75rem;
+    padding: 0.5rem 0.6rem;
+    background: #fdf6e3;
+    border: 1px solid #f0e0b0;
+    border-radius: 6px;
+}
+
+.playlist-edit-label {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #8a6d1f;
+    margin-right: auto;
+}
+
+.playlist-dropdown-edit {
+    color: #8a6d1f;
+    font-weight: 500;
+}
+
+@media (max-width: 640px) {
+    .playlist-edit-label { flex-basis: 100%; }
+    .playlist-edit-bar .btn { flex: 1; margin: 0; }
+}
+
+/* Row controls only while editing the playlist */
+.playlist-list:not(.editing) .playlist-item-duration,
+.playlist-list:not(.editing) .playlist-item-actions,
+.playlist-list:not(.editing) .playlist-item-drag-handle {
+    display: none;
+}
+
+.playlist-list:not(.editing) .playlist-item {
+    cursor: default;
+}
+
+/* Bigger show and playlist names; time left sits at the right of the
+   playing row instead of in a badge under the name. */
+.playlist-item-name {
+    font-size: 1.1rem;
+}
+
+.playlist-item-time {
+    margin-left: 0.75rem;
+    color: #27ae60;
+    font-size: 0.9rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.playlist-item-time:empty { display: none; }
+
+.playlist-dropdown-item-name {
+    font-size: 1.05rem;
+}
+
+@media (max-width: 640px) {
+    .playlist-item-name { font-size: 1.05rem; }
+    .playlist-item-time { font-size: 0.82rem; margin-left: 0.5rem; }
+}
+
+/* Larger thumbnails in both lists, and a bigger play arrow in Recently
+   Played; its names match Now Playing's now that the time line is gone. */
+.playlist-item-thumbnail {
+    width: 60px;
+    height: 60px;
+}
+
+.recent-item-play {
+    width: 34px;
+    height: 34px;
+    flex: 0 0 auto;
+    fill: currentColor;
+}
+
+@media (max-width: 640px) {
+    .playlist-item-thumbnail,
+    .playlist-item-thumbnail img {
+        width: 52px;
+        height: 52px;
+    }
+    .recent-item-play { width: 32px; height: 32px; }
+}
+
+/* Load Show / Load Playlist: a little larger than other small buttons */
+.playlist-actions .btn {
+    font-size: 0.95rem;
+    padding: 0.3rem 0.7rem;
 }

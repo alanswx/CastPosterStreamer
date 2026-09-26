@@ -3,11 +3,31 @@ import json
 import os
 import sys
 import shutil
+import time
 from typing import Optional, Dict, List, Any
 from pathlib import Path
 
 # Where "Browse Slideshows" starts. Overridable via the library_directory setting.
 DEFAULT_LIBRARY_DIRECTORY = "/Volumes/Dave's T7 SSD/Dropbox/shows - vertical"
+
+# Zones are independent display areas: their own current playlist, schedule and
+# playback, but a shared library of saved playlists.
+ZONE_BARN = "barn"          # the four Chromecast-built-in QLEDs
+ZONE_KITCHEN = "kitchen"    # the Samsung Frame, driven through Art Mode
+ZONES = (ZONE_BARN, ZONE_KITCHEN)
+
+# Settings that are per-zone. Everything else stays global (library_directory,
+# thumbnail_size...). Stored as "<zone>.<key>", e.g. "kitchen.schedule_on_time".
+ZONE_SCOPED_SETTINGS = (
+    "schedule_enabled", "schedule_on_time", "schedule_off_time",
+    "loaded_kind", "selected_directory", "current_playlist_name",
+    "slideshow_interval",
+)
+
+
+def zone_key(zone: str, key: str) -> str:
+    """Storage key for a per-zone setting."""
+    return f"{zone}.{key}"
 
 
 class SettingsManager:
@@ -85,23 +105,135 @@ class SettingsManager:
             """)
             
             conn.commit()
-            
-            # Set default values if they don't exist
-            self.set_default_settings()
+
+        self._migrate_to_zones()
+
+        # Set default values if they don't exist
+        self.set_default_settings()
+
+    def _migrate_to_zones(self):
+        """Make an existing single-zone database zone-aware, in place.
+
+        Everything that was there before belongs to the barn, so the existing
+        playlist rows and settings are adopted into that zone rather than
+        reset. Safe to run repeatedly.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+
+            cursor.execute("PRAGMA table_info(playlist_items)")
+            cols = [r[1] for r in cursor.fetchall()]
+            if 'zone' not in cols:
+                cursor.execute(
+                    f"ALTER TABLE playlist_items ADD COLUMN zone TEXT NOT NULL DEFAULT '{ZONE_BARN}'")
+                cursor.execute(
+                    "UPDATE playlist_items SET zone = ? WHERE zone IS NULL OR zone = ''", (ZONE_BARN,))
+
+            # Per-zone settings used to be bare keys; they were the barn's.
+            for key in ZONE_SCOPED_SETTINGS:
+                cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+                row = cursor.fetchone()
+                if not row:
+                    continue
+                cursor.execute("SELECT 1 FROM settings WHERE key = ?", (zone_key(ZONE_BARN, key),))
+                if not cursor.fetchone():
+                    cursor.execute(
+                        "INSERT INTO settings (key, value) VALUES (?, ?)",
+                        (zone_key(ZONE_BARN, key), row[0]))
+                cursor.execute("DELETE FROM settings WHERE key = ?", (key,))
+
+            # Maps a source image to the artwork id the Frame gave it, so the
+            # same poster isn't uploaded twice. Keyed by path + mtime + size so
+            # an edited file re-uploads.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS frame_art_cache (
+                    source_key TEXT PRIMARY KEY,
+                    content_id TEXT NOT NULL,
+                    directory_path TEXT NOT NULL,
+                    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            # Shows as they actually started on a zone's screens, for the
+            # Recently Played list. One row per show per zone: replaying a
+            # show moves it to the top rather than listing it twice.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS play_history (
+                    zone TEXT NOT NULL,
+                    directory_path TEXT NOT NULL,
+                    directory_name TEXT NOT NULL,
+                    played_at REAL NOT NULL,
+                    PRIMARY KEY (zone, directory_path)
+                )
+            """)
+            conn.commit()
+
+    # --- play history ------------------------------------------------------
+
+    HISTORY_KEEP = 30
+
+    def record_play(self, zone: str, directory_path: str, directory_name: str = None):
+        name = directory_name or os.path.basename(directory_path.rstrip('/')) or directory_path
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO play_history (zone, directory_path, directory_name, played_at)"
+                " VALUES (?, ?, ?, ?)", (zone, directory_path, name, time.time()))
+            conn.execute(
+                "DELETE FROM play_history WHERE zone = ? AND directory_path NOT IN ("
+                " SELECT directory_path FROM play_history WHERE zone = ?"
+                " ORDER BY played_at DESC LIMIT ?)", (zone, zone, self.HISTORY_KEEP))
+            conn.commit()
+
+    def get_recent_plays(self, zone: str, limit: int = 8) -> List[Dict[str, Any]]:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT directory_path, directory_name, played_at FROM play_history"
+                " WHERE zone = ? ORDER BY played_at DESC LIMIT ?", (zone, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+    # --- per-zone settings -------------------------------------------------
+
+    def get_zone_setting(self, zone: str, key: str) -> Optional[str]:
+        return self.get_setting(zone_key(zone, key))
+
+    def save_zone_setting(self, zone: str, key: str, value: str):
+        self.save_setting(zone_key(zone, key), str(value))
+
+    def get_zone_settings(self, zone: str) -> Dict[str, str]:
+        """All settings as the given zone sees them: globals plus its own
+        per-zone values, with the zone prefix stripped."""
+        allset = self.get_all_settings()
+        out = {k: v for k, v in allset.items() if '.' not in k}
+        prefix = f"{zone}."
+        for k, v in allset.items():
+            if k.startswith(prefix):
+                out[k[len(prefix):]] = v
+        return out
     
     def set_default_settings(self):
         """Set default configuration values."""
-        defaults = {
-            'slideshow_interval': '5',
-            'selected_directory': os.path.expanduser('~'),
+        globals_ = {
             'http_server_port': '0',  # Auto-select
             'thumbnail_size': '150',
             'rotation_enabled': 'true'  # Enable rotation by default
         }
-        
-        for key, value in defaults.items():
+        for key, value in globals_.items():
             if self.get_setting(key) is None:
                 self.save_setting(key, value)
+
+        # Per-zone defaults. The kitchen Frame holds each poster far longer
+        # than the barn screens do — it's a picture frame, not a slideshow.
+        # Deliberately no selected_directory default: it used to fall back to
+        # the home folder, and "Add Show" before browsing then added ~ as a
+        # show — a folder with no images that playback retries forever.
+        per_zone = {
+            ZONE_BARN: {'slideshow_interval': '5'},
+            ZONE_KITCHEN: {'slideshow_interval': '300'},
+        }
+        for zone, defaults in per_zone.items():
+            for key, value in defaults.items():
+                if self.get_zone_setting(zone, key) is None:
+                    self.save_zone_setting(zone, key, value)
     
     def get_setting(self, key: str) -> Optional[str]:
         """Get a setting value by key."""
@@ -190,14 +322,24 @@ class SettingsManager:
             cursor.execute("DELETE FROM devices WHERE uuid = ?", (uuid,))
             conn.commit()
     
-    def get_slideshow_interval(self) -> int:
-        """Get slideshow interval in seconds."""
-        interval = self.get_setting('slideshow_interval')
-        return int(interval) if interval else 5
-    
-    def get_selected_directory(self) -> str:
-        """Get the currently selected image directory."""
-        directory = self.get_setting('selected_directory')
+    # These two are zone-scoped settings, so they live under "<zone>.<key>".
+    # Reading the bare key returns nothing on a migrated database, which is
+    # how the barn ended up ignoring its configured interval and silently
+    # rotating on the 5 second fallback instead. The bare key is still tried
+    # second, for a database that predates the zone migration.
+    def get_slideshow_interval(self, zone: str = ZONE_BARN) -> int:
+        """Get a zone's slideshow interval in seconds."""
+        interval = self.get_zone_setting(zone, 'slideshow_interval') \
+            or self.get_setting('slideshow_interval')
+        try:
+            return int(interval) if interval else 5
+        except (TypeError, ValueError):
+            return 5
+
+    def get_selected_directory(self, zone: str = ZONE_BARN) -> str:
+        """Get a zone's currently selected image directory."""
+        directory = self.get_zone_setting(zone, 'selected_directory') \
+            or self.get_setting('selected_directory')
         return directory if directory else os.path.expanduser('~')
 
     def get_library_directory(self) -> str:
@@ -307,29 +449,30 @@ class SettingsManager:
         return thumbnail_dir
     
     # Playlist management methods
-    def add_playlist_item(self, directory_path: str, directory_name: str, duration_minutes: int = 10) -> int:
-        """Add a new item to the playlist."""
+    def add_playlist_item(self, directory_path: str, directory_name: str, duration_minutes: int = 10,
+                          zone: str = ZONE_BARN) -> int:
+        """Add a new item to a zone's playlist."""
         import os
         is_valid = 1 if os.path.exists(directory_path) and os.path.isdir(directory_path) else 0
         
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             
-            # Get the next order index
-            cursor.execute("SELECT MAX(order_index) FROM playlist_items")
+            # Get the next order index within this zone
+            cursor.execute("SELECT MAX(order_index) FROM playlist_items WHERE zone = ?", (zone,))
             max_order = cursor.fetchone()[0]
             next_order = (max_order or 0) + 1
             
             cursor.execute("""
-                INSERT INTO playlist_items (directory_path, directory_name, duration_minutes, order_index, is_valid)
-                VALUES (?, ?, ?, ?, ?)
-            """, (directory_path, directory_name, duration_minutes, next_order, is_valid))
+                INSERT INTO playlist_items (directory_path, directory_name, duration_minutes, order_index, is_valid, zone)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (directory_path, directory_name, duration_minutes, next_order, is_valid, zone))
             
             conn.commit()
             return cursor.lastrowid
     
-    def get_playlist_items(self) -> List[Dict[str, Any]]:
-        """Get all playlist items ordered by order_index."""
+    def get_playlist_items(self, zone: str = ZONE_BARN) -> List[Dict[str, Any]]:
+        """Get a zone's playlist items ordered by order_index."""
         import os
         
         with sqlite3.connect(self.db_path) as conn:
@@ -337,8 +480,9 @@ class SettingsManager:
             cursor.execute("""
                 SELECT id, directory_path, directory_name, duration_minutes, order_index, is_valid, created_at
                 FROM playlist_items
+                WHERE zone = ?
                 ORDER BY order_index
-            """)
+            """, (zone,))
             
             columns = ['id', 'directory_path', 'directory_name', 'duration_minutes', 'order_index', 'is_valid', 'created_at']
             items = [dict(zip(columns, row)) for row in cursor.fetchall()]
@@ -390,31 +534,38 @@ class SettingsManager:
                 """, (index + 1, item_id))
             conn.commit()
     
-    def _reorder_playlist_items(self):
-        """Internal method to reorder playlist items to fill gaps."""
+    def _reorder_playlist_items(self, zone: str = None):
+        """Internal: close order_index gaps, per zone."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id FROM playlist_items ORDER BY order_index")
-            item_ids = [row[0] for row in cursor.fetchall()]
-            
+            zones = [zone] if zone else list(ZONES)
+            item_ids = []
+            for z in zones:
+                cursor.execute("SELECT id FROM playlist_items WHERE zone = ? ORDER BY order_index", (z,))
+                item_ids = [row[0] for row in cursor.fetchall()]
+                for index, iid in enumerate(item_ids):
+                    cursor.execute("UPDATE playlist_items SET order_index = ? WHERE id = ?", (index + 1, iid))
+            conn.commit()
+            return
+
             for index, item_id in enumerate(item_ids):
                 cursor.execute("""
                     UPDATE playlist_items SET order_index = ? WHERE id = ?
                 """, (index + 1, item_id))
             conn.commit()
     
-    def clear_playlist(self):
-        """Remove all items from the playlist."""
+    def clear_playlist(self, zone: str = ZONE_BARN):
+        """Remove all items from a zone's playlist."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute("DELETE FROM playlist_items")
+            cursor.execute("DELETE FROM playlist_items WHERE zone = ?", (zone,))
             conn.commit()
     
-    def get_playlist_total_duration(self) -> int:
-        """Get total duration of all valid playlist items in minutes."""
+    def get_playlist_total_duration(self, zone: str = ZONE_BARN) -> int:
+        """Get total duration of a zone's valid playlist items, in minutes."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT SUM(duration_minutes) FROM playlist_items WHERE is_valid = 1")
+            cursor.execute("SELECT SUM(duration_minutes) FROM playlist_items WHERE is_valid = 1 AND zone = ?", (zone,))
             result = cursor.fetchone()[0]
             return result or 0
 

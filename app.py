@@ -21,6 +21,7 @@ monkey.patch_all(subprocess=False, os=False)
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit, join_room
 from flask_cors import CORS
+import functools
 import os
 import threading
 import logging
@@ -31,6 +32,9 @@ from settings_manager import SettingsManager
 from chromecast_manager import ChromecastManager
 from slideshow_controller import SlideshowController
 from scheduler import PowerScheduler
+from frame_controller import FrameController
+from zone_backends import BarnBackend, KitchenBackend
+from settings_manager import ZONE_BARN, ZONE_KITCHEN, ZONES
 
 
 # The 'DATA_FILES' setting in setup.py now correctly copies the 'templates'
@@ -48,9 +52,80 @@ chromecast_manager = ChromecastManager(settings_manager)
 # socketio = SocketIO(app, cors_allowed_origins="*")  <-- Removed duplicate initialization
 slideshow_controller = SlideshowController(settings_manager, chromecast_manager)
 slideshow_controller.init_app(socketio, app)
-power_scheduler = PowerScheduler(settings_manager, slideshow_controller, socketio,
-                                 discover_fn=lambda: run_discovery_sync(),
-                                 all_shows_fn=lambda: build_all_shows_items())
+
+# The kitchen Frame has no Chromecast, so it gets its own playback engine.
+frame_controller = FrameController(settings_manager, socketio)
+
+# One scheduler per zone; each drives its own screens through a backend.
+_barn_backend = BarnBackend(settings_manager, slideshow_controller, socketio,
+                            discover_fn=lambda: run_discovery_sync(),
+                            all_shows_fn=lambda: build_all_shows_items())
+_kitchen_backend = KitchenBackend(settings_manager, frame_controller, socketio,
+                                  all_shows_fn=lambda: build_all_shows_items())
+schedulers = {
+    ZONE_BARN: PowerScheduler(settings_manager, socketio, ZONE_BARN, _barn_backend),
+    ZONE_KITCHEN: PowerScheduler(settings_manager, socketio, ZONE_KITCHEN, _kitchen_backend),
+}
+
+
+class StaleClient(Exception):
+    """A request that changes a zone arrived without saying which zone."""
+
+
+def _zone_in_request():
+    """The zone named by ?zone=... or a "zone" field in the body, if any."""
+    zone = request.args.get('zone')
+    if not zone and request.method in ('POST', 'PUT', 'DELETE'):
+        try:
+            zone = (request.get_json(silent=True) or {}).get('zone')
+        except Exception:
+            zone = None
+    zone = (zone or '').lower()
+    return zone if zone in ZONES else None
+
+
+def req_zone(default: str = ZONE_BARN) -> str:
+    """Which zone a read is about. Falling back to the barn is harmless here:
+    the worst case is showing the wrong zone's data, not changing it."""
+    return _zone_in_request() or default
+
+
+def zone_required(view):
+    """Refuse a state-changing request that does not name its zone.
+
+    Guessing here is what made zone bugs silent and destructive. A page
+    written before zones existed sends no zone at all, and defaulting sent
+    its writes to the barn: loading a playlist into the kitchen quietly
+    replaced the barn's playlist and left the kitchen untouched, so the UI
+    showed the new playlist's name above the old one's shows.
+
+    This runs before the view, and so before the view's own except-Exception
+    block, which would otherwise turn the refusal into an opaque 500.
+    """
+    @functools.wraps(view)
+    def wrapper(*args, **kwargs):
+        if _zone_in_request() is None:
+            logger.warning(f"Rejected zone-less {request.method} {request.path} "
+                           f"from {request.remote_addr} (stale page)")
+            return jsonify({'error': 'This page is out of date — reload it. The '
+                                     'request did not say which zone it was for, '
+                                     'so it was refused rather than applied to '
+                                     'the wrong screens.'}), 409
+        return view(*args, **kwargs)
+    return wrapper
+
+
+def req_zone_strict() -> str:
+    """The zone of a state-changing request. Only ever called from a view
+    wrapped in @zone_required, so the zone is guaranteed to be present."""
+    zone = _zone_in_request()
+    if not zone:
+        raise StaleClient()
+    return zone
+
+
+def zone_scheduler(zone: str) -> PowerScheduler:
+    return schedulers[zone]
 
 # Configure logging — ONLY use a file handler.  DO NOT log to stderr.
 # In a py2app macOS bundle, stderr is a pipe with a finite buffer (~64KB).
@@ -208,10 +283,28 @@ def run_discovery_sync(wait_if_busy: float = 20.0) -> bool:
         socketio.emit('discovery_finished')
 
 
+# Cache-buster for static assets. Phones cache app.js aggressively, and a
+# stale copy silently sends requests without a zone — which is how a "Run Off
+# Now" pressed with Kitchen selected turned the barn off instead.
+def _asset_version() -> str:
+    newest = 0.0
+    for rel in ('static/js/app.js', 'static/css/style.css'):
+        try:
+            newest = max(newest, os.path.getmtime(os.path.join(os.path.dirname(__file__), rel)))
+        except OSError:
+            pass
+    return str(int(newest))
+
+
+ASSET_VERSION = _asset_version()
+
+
 @app.route('/')
 def index():
     """Main page with slideshow controls."""
-    return render_template('index.html')
+    response = app.make_response(render_template('index.html', asset_version=ASSET_VERSION))
+    response.headers['Cache-Control'] = 'no-store'
+    return response
 
 
 @app.route('/api/settings', methods=['GET'])
@@ -221,19 +314,30 @@ def get_settings():
     library_directory is filled in from its default when unset, so the UI shows
     the folder Browse will actually open rather than an empty box.
     """
-    settings = settings_manager.get_all_settings()
+    zone = req_zone()
+    settings = settings_manager.get_zone_settings(zone)
     settings.setdefault('library_directory', settings_manager.get_library_directory())
+    settings['zone'] = zone
     return jsonify(settings)
 
 
 @app.route('/api/settings', methods=['POST'])
+@zone_required
 def save_settings():
     """Save settings from the frontend."""
-    data = request.get_json()
-    
+    data = request.get_json() or {}
+    zone = req_zone_strict()
+    from settings_manager import ZONE_SCOPED_SETTINGS
+
     for key, value in data.items():
-        settings_manager.save_setting(key, str(value))
-    
+        if key == 'zone':
+            continue
+        # Per-zone keys are stored under this zone; the rest stay global.
+        if key in ZONE_SCOPED_SETTINGS:
+            settings_manager.save_zone_setting(zone, key, str(value))
+        else:
+            settings_manager.save_setting(key, str(value))
+
     socketio.emit('settings_updated', data)
     return jsonify({'status': 'success'})
 
@@ -485,6 +589,19 @@ def skip_slideshow():
 
 
 # Playlist API endpoints
+def set_loaded(zone: str, kind: str, name: str = None):
+    """Record what a zone has loaded.
+
+    The heading the UI shows and what a scheduled start replays both come from
+    these two settings, so anything that changes a zone's playlist has to
+    record it here. Leaving the browser to write them afterwards is how the
+    kitchen ended up labelled "Offbeat" above a different playlist's shows.
+    """
+    settings_manager.save_zone_setting(zone, 'loaded_kind', kind)
+    if name is not None:
+        settings_manager.save_zone_setting(zone, 'current_playlist_name', name)
+
+
 @app.route('/api/playlist', methods=['GET'])
 def get_playlist():
     """Get the playlist to display.
@@ -493,34 +610,55 @@ def get_playlist():
     of the stored one so the UI shows what's actually playing. The stored
     playlist is untouched and comes back as soon as playback stops.
     """
-    virtual = slideshow_controller.virtual_items
+    zone = req_zone()
+    ctl = slideshow_controller if zone == ZONE_BARN else frame_controller
+    virtual = ctl.virtual_items
     if virtual is not None:
+        # The kitchen plays a single show as a one-item virtual list; say so,
+        # so the page labels it as a show rather than "(Playlist) France".
+        is_show = len(virtual) == 1 and virtual[0].get('id') == 'loaded-show'
         return jsonify({
             'items': virtual,
             'total_duration': sum(i.get('duration_minutes', 0) for i in virtual),
             'item_count': len(virtual),
             'virtual': True,
-            'virtual_name': slideshow_controller.virtual_name,
+            'virtual_name': ctl.virtual_name,
+            'virtual_kind': 'show' if is_show else 'playlist',
+            'zone': zone,
         })
 
-    items = settings_manager.get_playlist_items()
-    total_duration = settings_manager.get_playlist_total_duration()
+    items = settings_manager.get_playlist_items(zone=zone)
+    total_duration = settings_manager.get_playlist_total_duration(zone=zone)
+    # The name travels with the items so the heading always describes the list
+    # underneath it, whoever changed it and from which device.
     return jsonify({
         'items': items,
         'total_duration': total_duration,
         'item_count': len(items),
         'virtual': False,
         'virtual_name': None,
+        'playlist_name': settings_manager.get_zone_setting(zone, 'current_playlist_name') or '',
+        'loaded_kind': settings_manager.get_zone_setting(zone, 'loaded_kind') or 'playlist',
+        'zone': zone,
     })
 
 
 @app.route('/api/playlist/items', methods=['POST'])
+@zone_required
 def add_playlist_item():
     """Add current directory to playlist."""
     try:
-        current_dir = settings_manager.get_selected_directory()
+        zone = req_zone_strict()
+        current_dir = settings_manager.get_zone_setting(zone, 'selected_directory') \
+            or settings_manager.get_selected_directory()
         if not current_dir:
             return jsonify({'error': 'No directory selected'}), 400
+
+        # Only folders that actually hold images are shows. Without this, a
+        # stray selected_directory (the home folder, say) becomes a playlist
+        # entry that playback can never display.
+        if not slideshow_controller.get_images_in_directory(current_dir):
+            return jsonify({'error': f'No images in "{os.path.basename(current_dir) or current_dir}" — pick a show folder'}), 400
         
         # Get directory name for display
         directory_name = os.path.basename(current_dir) or current_dir
@@ -528,7 +666,7 @@ def add_playlist_item():
         # Default duration
         duration = 10
         
-        item_id = settings_manager.add_playlist_item(current_dir, directory_name, duration)
+        item_id = settings_manager.add_playlist_item(current_dir, directory_name, duration, zone=zone)
         socketio.emit('playlist_updated')
         
         return jsonify({
@@ -589,10 +727,13 @@ def reorder_playlist():
 
 
 @app.route('/api/playlist/clear', methods=['DELETE'])
+@zone_required
 def clear_playlist():
     """Clear all items from the playlist."""
     try:
-        settings_manager.clear_playlist()
+        zone = req_zone_strict()
+        settings_manager.clear_playlist(zone=zone)
+        set_loaded(zone, 'playlist', '')
         socketio.emit('playlist_updated')
         return jsonify({'status': 'success'})
     except Exception as e:
@@ -601,8 +742,16 @@ def clear_playlist():
 
 
 @app.route('/api/playlist/start', methods=['POST'])
+@zone_required
 def start_playlist():
     """Start playlist mode slideshow, taking over from a single show if one is playing."""
+    zone = req_zone_strict()
+    if zone == ZONE_KITCHEN:
+        result = frame_controller.start()
+        if not result.get('success'):
+            return jsonify({'error': result.get('error', 'Failed to start')}), 400
+        socketio.emit('kitchen_status_update', frame_controller.get_status())
+        return jsonify({'status': 'success'})
     try:
         result = slideshow_controller.play_current_playlist()
         logger.info(f"Start playlist result: {result}")
@@ -636,8 +785,13 @@ def start_playlist():
 
 
 @app.route('/api/playlist/pause', methods=['POST'])
+@zone_required
 def pause_playlist():
     """Pause or resume playlist."""
+    if req_zone_strict() == ZONE_KITCHEN:
+        frame_controller.toggle_pause()
+        socketio.emit('kitchen_status_update', frame_controller.get_status())
+        return jsonify({'status': 'success'})
     try:
         slideshow_controller.toggle_playlist_pause()
         socketio.emit('playlist_paused')
@@ -652,6 +806,7 @@ def pause_playlist():
 
 
 @app.route('/api/show/play', methods=['POST'])
+@zone_required
 def play_show():
     """Switch to a single show as one atomic server-side operation."""
     data = request.get_json() or {}
@@ -659,7 +814,29 @@ def play_show():
     if not path:
         return jsonify({'error': 'path is required'}), 400
 
+    zone = req_zone_strict()
+    # Record what's loaded server-side, as loading a playlist does: the
+    # scheduler replays it and a reloaded page labels it from these.
+    settings_manager.save_zone_setting(zone, 'selected_directory', path)
+    set_loaded(zone, 'show')
+    if zone == ZONE_KITCHEN:
+        name = path.rstrip('/').split('/')[-1] or path
+        items = [{'directory_path': path, 'directory_name': name,
+                  'duration_minutes': 60, 'is_valid': 1, 'id': 'loaded-show'}]
+        frame_controller.stop()
+        result = frame_controller.start(items=items, name=name)
+        socketio.emit('kitchen_status_update', frame_controller.get_status())
+        if not result.get('success'):
+            return jsonify({'error': result.get('error', 'Failed to start show')}), 400
+        logger.info(f"Kitchen playing single show: {path}")
+        return jsonify({'status': 'success'})
     try:
+        # Straight after the app starts nothing has discovered the screens
+        # yet, and the show would be refused with "No enabled Chromecast
+        # devices found". The scheduler guards against this the same way.
+        if not chromecast_manager.get_enabled_devices():
+            logger.info("[barn] no screens known yet, discovering before playing show")
+            run_discovery_sync()
         result = slideshow_controller.play_single_show(path)
         socketio.emit('playlist_stopped')
         socketio.emit('playlist_status_update', slideshow_controller.get_playlist_status())
@@ -673,8 +850,12 @@ def play_show():
 
 
 @app.route('/api/playlist/skip', methods=['POST'])
+@zone_required
 def skip_playlist():
     """Skip to next item in playlist."""
+    if req_zone_strict() == ZONE_KITCHEN:
+        frame_controller.skip()
+        return jsonify({'status': 'success'})
     try:
         slideshow_controller.skip_playlist_item()
         # Note: Controller will handle all WebSocket emissions - removed blocking sleep and duplicate emissions
@@ -686,8 +867,13 @@ def skip_playlist():
 
 
 @app.route('/api/playlist/stop', methods=['POST'])
+@zone_required
 def stop_playlist():
     """Stop playlist mode slideshow."""
+    if req_zone_strict() == ZONE_KITCHEN:
+        frame_controller.stop()
+        socketio.emit('kitchen_status_update', frame_controller.get_status())
+        return jsonify({'status': 'success'})
     try:
         slideshow_controller.stop_playlist()
         socketio.emit('playlist_stopped')
@@ -705,9 +891,38 @@ def stop_playlist():
 
 @app.route('/api/playlist/status', methods=['GET'])
 def get_playlist_status():
-    """Get current playlist execution status."""
-    status = slideshow_controller.get_playlist_status()
+    """Get current playlist execution status for a zone."""
+    zone = req_zone()
+    status = (slideshow_controller.get_playlist_status() if zone == ZONE_BARN
+              else frame_controller.get_status())
+    status['zone'] = zone
     return jsonify(status)
+
+
+def _now_playing_path(zone: str):
+    """The folder a zone is showing right now, or None."""
+    if zone == ZONE_KITCHEN:
+        item = frame_controller.current_item if frame_controller.is_running else None
+        return item.get('directory_path') if item else None
+    if slideshow_controller.is_playlist_running:
+        item = slideshow_controller.get_playlist_status().get('current_item')
+        return item.get('directory_path') if item else None
+    if slideshow_controller.is_slideshow_running:
+        return settings_manager.get_selected_directory(ZONE_BARN)
+    return None
+
+
+@app.route('/api/recent', methods=['GET'])
+def recent_plays():
+    """A zone's recently played shows, newest first — leaving out the one on
+    screen now, which the Now Playing list already shows."""
+    zone = req_zone()
+    playing = _now_playing_path(zone)
+    shows = [s for s in settings_manager.get_recent_plays(zone, limit=9)
+             if s['directory_path'] != playing][:8]
+    for s in shows:
+        s['available'] = os.path.isdir(s['directory_path'])
+    return jsonify({'zone': zone, 'shows': shows})
 
 
 # Saved Playlists API
@@ -718,6 +933,7 @@ def list_saved_playlists():
 
 
 @app.route('/api/saved-playlists', methods=['POST'])
+@zone_required
 def create_saved_playlist():
     """Save the current active playlist under a name."""
     data = request.get_json()
@@ -725,7 +941,7 @@ def create_saved_playlist():
     if not name:
         return jsonify({'error': 'Name is required'}), 400
     try:
-        items = settings_manager.get_playlist_items()
+        items = settings_manager.get_playlist_items(zone=req_zone_strict())
         save_items = [
             {k: v for k, v in item.items() if k in ('directory_path', 'directory_name', 'duration_minutes', 'order_index')}
             for item in items
@@ -738,6 +954,7 @@ def create_saved_playlist():
 
 
 @app.route('/api/saved-playlists/<int:playlist_id>', methods=['PUT'])
+@zone_required
 def update_saved_playlist(playlist_id):
     """Overwrite a saved playlist with current active playlist (optionally rename)."""
     data = request.get_json()
@@ -745,7 +962,7 @@ def update_saved_playlist(playlist_id):
     if not name:
         return jsonify({'error': 'Name is required'}), 400
     try:
-        items = settings_manager.get_playlist_items()
+        items = settings_manager.get_playlist_items(zone=req_zone_strict())
         save_items = [
             {k: v for k, v in item.items() if k in ('directory_path', 'directory_name', 'duration_minutes', 'order_index')}
             for item in items
@@ -769,19 +986,23 @@ def delete_saved_playlist(playlist_id):
 
 
 @app.route('/api/saved-playlists/<int:playlist_id>/load', methods=['POST'])
+@zone_required
 def load_saved_playlist(playlist_id):
     """Replace the active playlist with a saved playlist."""
     try:
         saved = settings_manager.get_saved_playlist(playlist_id)
         if not saved:
             return jsonify({'error': 'Playlist not found'}), 404
-        settings_manager.clear_playlist()
+        zone = req_zone_strict()
+        settings_manager.clear_playlist(zone=zone)
         for item in saved['items']:
             settings_manager.add_playlist_item(
                 item['directory_path'],
                 item['directory_name'],
-                item.get('duration_minutes', 10)
+                item.get('duration_minutes', 10),
+                zone=zone
             )
+        set_loaded(zone, 'playlist', saved['name'])
         socketio.emit('playlist_updated')
         return jsonify({'id': saved['id'], 'name': saved['name']})
     except Exception as e:
@@ -836,6 +1057,7 @@ def preview_all_shows():
 
 
 @app.route('/api/playlist/play-all-shows', methods=['POST'])
+@zone_required
 def play_all_shows():
     """Play every show from all saved playlists as a VIRTUAL playlist.
 
@@ -847,6 +1069,16 @@ def play_all_shows():
         merged = build_all_shows_items()
         if not merged:
             return jsonify({'error': 'No shows found in any saved playlist'}), 400
+
+        zone = req_zone_strict()
+        if zone == ZONE_KITCHEN:
+            frame_controller.stop()
+            result = frame_controller.start(items=merged, name=ALL_SHOWS_NAME)
+            if not result.get('success'):
+                return jsonify({'error': result.get('error', 'Failed to start')}), 400
+            skipped = sum(1 for i in merged if not i['is_valid'])
+            socketio.emit('kitchen_status_update', frame_controller.get_status())
+            return jsonify({'count': len(merged), 'skipped': skipped, 'name': ALL_SHOWS_NAME})
 
         slideshow_controller.stop_playlist()
         slideshow_controller.stop_slideshow()
@@ -874,20 +1106,21 @@ def play_all_shows():
 @app.route('/api/schedule', methods=['GET'])
 def get_schedule():
     """Schedule config plus what the scheduler thinks right now."""
-    return jsonify(power_scheduler.status())
+    return jsonify(zone_scheduler(req_zone()).status())
 
 
 @app.route('/api/schedule', methods=['POST'])
+@zone_required
 def save_schedule():
     """Save schedule config. Re-evaluates immediately (see PowerScheduler.save_config)."""
     data = request.get_json() or {}
     try:
-        cfg = power_scheduler.save_config(
+        cfg = zone_scheduler(req_zone_strict()).save_config(
             enabled=bool(data.get('enabled', False)),
             on_time=str(data.get('on_time', '')),
             off_time=str(data.get('off_time', '')),
         )
-        socketio.emit('schedule_status', power_scheduler.status())
+        socketio.emit('schedule_status', zone_scheduler(req_zone_strict()).status())
         return jsonify(cfg)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
@@ -897,6 +1130,7 @@ def save_schedule():
 
 
 @app.route('/api/schedule/run/<state>', methods=['POST'])
+@zone_required
 def run_schedule_now(state):
     """Run the on/off sequence immediately — the UI's test buttons.
 
@@ -904,7 +1138,7 @@ def run_schedule_now(state):
     result back. Can take a while the first time a TV needs to be paired.
     """
     try:
-        return jsonify(power_scheduler.run_now(state))
+        return jsonify(zone_scheduler(req_zone_strict()).run_now(state))
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     except Exception as e:
@@ -915,7 +1149,7 @@ def run_schedule_now(state):
 @app.route('/api/schedule/power-states', methods=['GET'])
 def get_power_states():
     """Live PowerState of each enabled screen."""
-    return jsonify(power_scheduler.power_states())
+    return jsonify(zone_scheduler(req_zone()).power_states())
 
 
 @socketio.on('connect')
@@ -1067,7 +1301,8 @@ if __name__ == '__main__':
         logger.info("Watchdog thread started (will dump stacks if hub freezes for >10s)")
 
         # Daily screen on/off schedule (no-op until enabled in the UI)
-        power_scheduler.start()
+        for _z, _s in schedulers.items():
+            _s.start()
 
         socketio.run(app, host='0.0.0.0', port=5001, debug=False, allow_unsafe_werkzeug=True)
         

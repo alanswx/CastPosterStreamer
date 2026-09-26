@@ -44,10 +44,16 @@ class ChromecastSlideshowController {
         this.playlistLabelEl = document.getElementById('playlist-label');
         this.loadShowBtn = document.getElementById('load-show');
         this.addShowBtn = document.getElementById('add-show');
+        this.editBarEl = document.getElementById('playlist-edit-bar');
+        this.editDoneBtn = document.getElementById('playlist-edit-done');
         this.showPickerEl = document.getElementById('show-picker');
         this.pickerTitleEl = document.getElementById('picker-title');
         this.pickerCloseBtn = document.getElementById('picker-close');
         this.pickerMode = null;          // 'load' | 'add' while the picker is open
+
+        // Which set of screens everything on the page refers to.
+        this.zone = localStorage.getItem('posters.zone') || 'barn';
+        this.zoneToggleEl = document.getElementById('zone-toggle');
 
         // What the Play button will start: the playlist, or a single loaded show.
         this.selection = { type: 'playlist', name: null, path: null };
@@ -67,6 +73,7 @@ class ChromecastSlideshowController {
 
         // Playlist elements
         this.playlistListEl = document.getElementById('playlist-list');
+        this.recentListEl = document.getElementById('recent-list');
         this.playlistNameEl = document.getElementById('playlist-name');
         this.playlistDirtyEl = document.getElementById('playlist-dirty');
         this.savePlaylistBtn = document.getElementById('save-playlist');
@@ -119,6 +126,7 @@ class ChromecastSlideshowController {
 
         // Playlist events
         this.savePlaylistBtn.addEventListener('click', () => this.savePlaylist());
+        this.editDoneBtn.addEventListener('click', () => this.setEditing(false));
         this.loadPlaylistBtn.addEventListener('click', (e) => { e.stopPropagation(); this.toggleLoadDropdown(); });
         this.savePlaylistConfirmBtn.addEventListener('click', () => this.confirmSavePlaylist());
         this.savePlaylistCancelBtn.addEventListener('click', () => this.hideSaveModal());
@@ -133,6 +141,12 @@ class ChromecastSlideshowController {
         this.scheduleRunOnBtn.addEventListener('click', () => this.runScheduleNow('on'));
         this.scheduleRunOffBtn.addEventListener('click', () => this.runScheduleNow('off'));
         this.scheduleCheckBtn.addEventListener('click', () => this.checkScreens());
+
+        // Zone switch
+        [...this.zoneToggleEl.querySelectorAll('.zone-btn')].forEach(btn =>
+            btn.addEventListener('click', () => this.setZone(btn.dataset.zone)));
+        [...this.zoneToggleEl.querySelectorAll('.zone-btn')].forEach(b =>
+            b.classList.toggle('is-active', b.dataset.zone === this.zone));
 
         // Reconnect when tab becomes visible again (browser throttles WebSocket heartbeat in background)
         document.addEventListener('visibilitychange', () => {
@@ -162,7 +176,7 @@ class ChromecastSlideshowController {
             // Only act if the server says something is playing — an idle app
             // legitimately emits nothing.
             try {
-                const status = await (await fetch('/api/playlist/status')).json();
+                const status = await (await this.api('/api/playlist/status')).json();
                 if (!status.running && !this.showPlaying) {
                     this._lastEventAt = Date.now();
                     return;
@@ -265,7 +279,41 @@ class ChromecastSlideshowController {
 
         this.socket.onAny(() => { this._lastEventAt = Date.now(); });
 
+        // Recently Played: a new show on screen adds to it, and stopping puts
+        // the show that was playing back into it.
+        this.socket.on('recent_updated', (data) => {
+            if (!data || data.zone === this.zone) this.loadRecent();
+        });
+        this.socket.on('playlist_stopped', () => { if (this.zone === 'barn') this.loadRecent(); });
+        // A single show started or stopped elsewhere (the scheduler, another
+        // device): re-read the barn's state so the row and controls follow.
+        this.socket.on('slideshow_status', () => {
+            if (this.zone !== 'barn') return;
+            this.refreshPlaybackState();
+            this.loadRecent();
+        });
+        // Catches anything the events above missed.
+        setInterval(() => this.loadRecent(), 60000);
+
+        // The kitchen Frame reports through its own event; ignore whichever
+        // zone isn't on screen so the two never overwrite each other's status.
+        this.socket.on('kitchen_status_update', (status) => {
+            if (this.zone !== 'kitchen') return;
+            if (this._kitchenRunning !== undefined && this._kitchenRunning !== !!status.running) {
+                this.loadRecent();
+            }
+            this._kitchenRunning = !!status.running;
+            try {
+                this.updateSlideshowControls(status.running, 'playlist');
+                this.updatePlaylistProgress(status);
+                this.highlightCurrentPlaylistItem(status);
+            } catch (error) {
+                console.error('Error processing kitchen_status_update:', error);
+            }
+        });
+
         this.socket.on('playlist_status_update', (status) => {
+            if (this.zone !== 'barn') return;
             // Ensure status is an object if received as string
             if (typeof status === 'string') {
                 try {
@@ -306,20 +354,86 @@ class ChromecastSlideshowController {
         // show the scheduler started) would leave the page thinking nothing
         // is playing.
         try {
-            const s = await (await fetch('/api/slideshow/status')).json();
+            const s = await (await this.api('/api/slideshow/status')).json();
             this.showPlaying = !!s.running;
         } catch (e) { /* leave it false */ }
         await this.loadPlaylist();
-        this.updateSlideshowControls(false, 'show');
+        await this.refreshPlaybackState();
+        await this.loadRecent();
         await this.loadSchedule();
         // Removed loadSlideshowStatus() - using playlist system exclusively
         // Removed loadPlaylistStatus() - rely on WebSocket updates for real-time status
         this.discoverDevices();
     }
 
+    /**
+     * Pull the current zone's playback state rather than waiting for a push.
+     * The kitchen's interval is measured in minutes, so a freshly loaded page
+     * would otherwise show stale controls until the next image change.
+     */
+    async refreshPlaybackState() {
+        try {
+            // A single show plays outside playlist mode, so playlist status
+            // reports not-running while the screens are very much casting.
+            if (this.zone === 'barn') {
+                try {
+                    const s = await (await this.api('/api/slideshow/status')).json();
+                    this.showPlaying = !!s.running;
+                } catch (e) { /* leave as-is */ }
+            }
+            const status = await (await this.api('/api/playlist/status')).json();
+            this.updateSlideshowControls(status.running, 'playlist');
+            this.updatePlaylistProgress(status);
+            this.highlightCurrentPlaylistItem(status);
+        } catch (e) {
+            this.updateSlideshowControls(false, 'playlist');
+        }
+    }
+
+    /**
+     * fetch() that carries the current zone. Every playlist, schedule and
+     * playback endpoint is zone-scoped; routing all calls through here means
+     * no call site can forget, which is how the two zones stay independent.
+     */
+    async api(path, opts = {}) {
+        const zone = this.zone || 'barn';
+        const url = path + (path.includes('?') ? '&' : '?') + 'zone=' + encodeURIComponent(zone);
+        if (opts.body && typeof opts.body === 'string') {
+            try {
+                const body = JSON.parse(opts.body);
+                body.zone = zone;
+                opts = { ...opts, body: JSON.stringify(body) };
+            } catch (e) { /* not JSON; leave it alone */ }
+        }
+        const response = await fetch(url, opts);
+        // The server refuses zone-less writes from pages that predate zones.
+        // A page left open across an update is exactly that, so reload it
+        // rather than leaving the user pressing buttons that do nothing.
+        if (response.status === 409) {
+            this.logMessage('This page was out of date — reloading…', 'error');
+            setTimeout(() => window.location.reload(true), 800);
+        }
+        return response;
+    }
+
+    setZone(zone) {
+        if (zone === this.zone) return;
+        this.zone = zone;
+        localStorage.setItem('posters.zone', zone);
+        [...this.zoneToggleEl.querySelectorAll('.zone-btn')].forEach(b =>
+            b.classList.toggle('is-active', b.dataset.zone === zone));
+        this.closePicker();
+        this.setEditing(false);
+        this._lastStatus = null;
+        this.allShowsQueue = null;
+        this.selection = { type: 'playlist', name: null, path: null };
+        this.logMessage(`Switched to ${zone}`, 'info');
+        this.loadInitialData();
+    }
+
     async loadSettings() {
         try {
-            const response = await fetch('/api/settings');
+            const response = await this.api('/api/settings');
             const settings = await response.json();
 
             if (settings.slideshow_interval && this.slideshowIntervalEl) {
@@ -338,7 +452,7 @@ class ChromecastSlideshowController {
             // A loaded All Shows queue survives a reload.
             if (settings.loaded_kind === 'all_shows') {
                 try {
-                    const all = await (await fetch('/api/playlist/all-shows')).json();
+                    const all = await (await this.api('/api/playlist/all-shows')).json();
                     if (all.item_count) {
                         this.allShowsQueue = all.items;
                         this.selection = { type: 'all-shows', name: all.name, path: null };
@@ -426,7 +540,7 @@ class ChromecastSlideshowController {
             this.selectedDirectory = this.currentPath;
 
             // Then add to playlist
-            const response = await fetch('/api/playlist/items', {
+            const response = await this.api('/api/playlist/items', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' }
             });
@@ -446,7 +560,7 @@ class ChromecastSlideshowController {
 
     async loadDevices() {
         try {
-            const response = await fetch('/api/devices');
+            const response = await this.api('/api/devices');
             this.devices = await response.json();
             this.updateDeviceList();
         } catch (error) {
@@ -575,7 +689,7 @@ class ChromecastSlideshowController {
         try {
             // One atomic call: stopping and starting separately left a gap
             // wide enough for the scheduler (or another tab) to slip in.
-            const response = await fetch('/api/show/play', {
+            const response = await this.api('/api/show/play', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ path: showPath })
@@ -603,7 +717,7 @@ class ChromecastSlideshowController {
      */
     async loadAllShows() {
         try {
-            const response = await fetch('/api/playlist/all-shows');
+            const response = await this.api('/api/playlist/all-shows');
             const data = await response.json();
             if (!response.ok) throw new Error(data.error || 'Failed to load All Shows');
             if (!data.item_count) {
@@ -627,7 +741,7 @@ class ChromecastSlideshowController {
      */
     async playAllShows() {
         try {
-            const response = await fetch('/api/playlist/play-all-shows', { method: 'POST' });
+            const response = await this.api('/api/playlist/play-all-shows', { method: 'POST' });
             const result = await response.json();
             if (!response.ok) throw new Error(result.error || 'Failed to play all shows');
 
@@ -705,52 +819,56 @@ class ChromecastSlideshowController {
         await this.loadPlaylist();
     }
 
-    /** Reflect the selection (and, while running, what's actually playing). */
     /**
-     * Mark the playing row in the list with a "Now Playing" label and the
-     * time left, and clear it from every other row. There is no separate
-     * current-show panel — the list itself shows what's on.
+     * Mark the playing row: green background, and the time left on the right.
+     * The only place that does — a second highlighter used to handle
+     * playlists alone, so a single show got a label but no background.
+     * Called with a status whenever one arrives; called bare after the list
+     * is rebuilt, when it reuses the last status rather than blanking the
+     * marker until the next one.
      */
     updateNowPlaying(playlistStatus = null) {
+        if (playlistStatus) this._lastStatus = playlistStatus;
+        const status = playlistStatus || this._lastStatus;
         const rows = this.playlistListEl
             ? this.playlistListEl.querySelectorAll('.playlist-item')
             : [];
         if (!rows.length) return;
 
-        const item = playlistStatus && playlistStatus.current_item;
+        const item = status && status.current_item;
         let playingRow = null;
         let label = '';
 
-        if (playlistStatus && playlistStatus.running && item) {
+        if (status && status.running && item) {
             playingRow = this.playlistListEl.querySelector(`[data-item-id="${item.id}"]`);
-            const mins = Math.floor(playlistStatus.time_remaining / 60);
-            const secs = playlistStatus.time_remaining % 60;
-            const clock = `${mins}:${String(secs).padStart(2, '0')} left`;
-            label = playlistStatus.paused ? `Now Playing · paused · ${clock}` : `Now Playing · ${clock}`;
+            // A single show has no end, so no countdown — only playlist shows.
+            if (typeof status.time_remaining === 'number' && item.id !== 'loaded-show') {
+                const mins = Math.floor(status.time_remaining / 60);
+                const secs = status.time_remaining % 60;
+                const clock = `${mins}:${String(secs).padStart(2, '0')} left`;
+                label = status.paused ? `paused · ${clock}` : clock;
+            } else if (status.paused) {
+                label = 'paused';
+            }
         } else if (this.showPlaying && this.selection.type === 'show') {
             // A single show is casting AND it's the show being listed. The
             // selection check matters: without it, a show left playing while a
-            // playlist is displayed would badge that playlist's first row.
+            // playlist is displayed would mark that playlist's first row.
             playingRow = rows[0];
-            label = 'Now Playing';
         }
 
         rows.forEach(row => {
-            const badge = row.querySelector('.now-playing-badge');
-            if (!badge) return;
-            if (row === playingRow) {
-                badge.textContent = label;
-                badge.style.display = '';
-            } else {
-                badge.style.display = 'none';
-            }
+            const playing = row === playingRow;
+            row.classList.toggle('currently-playing', playing);
+            const time = row.querySelector('.playlist-item-time');
+            if (time) time.textContent = playing ? label : '';
         });
     }
 
     async startPlaylistSlideshow() {
         try {
             await this.saveSettings();
-            const response = await fetch('/api/playlist/start', { method: 'POST' });
+            const response = await this.api('/api/playlist/start', { method: 'POST' });
             const result = await response.json();
 
             if (!response.ok) {
@@ -769,11 +887,11 @@ class ChromecastSlideshowController {
         // Check which mode is running and pause accordingly
         try {
             // Try playlist pause first
-            const playlistResponse = await fetch('/api/playlist/status');
+            const playlistResponse = await this.api('/api/playlist/status');
             const playlistStatus = await playlistResponse.json();
 
             if (playlistStatus.running) {
-                const response = await fetch('/api/playlist/pause', { method: 'POST' });
+                const response = await this.api('/api/playlist/pause', { method: 'POST' });
                 if (!response.ok) {
                     const error = await response.json();
                     this.logMessage(`Error pausing playlist: ${error.error}`, 'error');
@@ -791,11 +909,11 @@ class ChromecastSlideshowController {
     async skipSlideshow() {
         try {
             // Check which mode is running and skip accordingly
-            const playlistResponse = await fetch('/api/playlist/status');
+            const playlistResponse = await this.api('/api/playlist/status');
             const playlistStatus = await playlistResponse.json();
 
             if (playlistStatus.running) {
-                const response = await fetch('/api/playlist/skip', { method: 'POST' });
+                const response = await this.api('/api/playlist/skip', { method: 'POST' });
                 if (!response.ok) {
                     const error = await response.json();
                     this.logMessage(`Error skipping playlist item: ${error.error}`, 'error');
@@ -807,7 +925,7 @@ class ChromecastSlideshowController {
             }
 
             // Single directory skip
-            const response = await fetch('/api/slideshow/skip', { method: 'POST' });
+            const response = await this.api('/api/slideshow/skip', { method: 'POST' });
             if (!response.ok) {
                 const error = await response.json();
                 this.logMessage(`Error skipping: ${error.error}`, 'error');
@@ -820,8 +938,8 @@ class ChromecastSlideshowController {
     async stopSlideshow() {
         try {
             // Force stop both playlist and regular slideshow regardless of frontend state
-            const playlistResponse = await fetch('/api/playlist/stop', { method: 'POST' });
-            const slideshowResponse = await fetch('/api/slideshow/stop', { method: 'POST' });
+            const playlistResponse = await this.api('/api/playlist/stop', { method: 'POST' });
+            const slideshowResponse = await this.api('/api/slideshow/stop', { method: 'POST' });
 
             // Check results
             if (playlistResponse.ok) {
@@ -854,7 +972,7 @@ class ChromecastSlideshowController {
 
     async loadSlideshowStatus() {
         try {
-            const response = await fetch('/api/slideshow/status');
+            const response = await this.api('/api/slideshow/status');
             const status = await response.json();
 
             this.updateSlideshowControls(status.running);
@@ -879,7 +997,7 @@ class ChromecastSlideshowController {
         this.pauseSlideshowBtn.disabled = !isRunning;
         this.skipSlideshowBtn.disabled = !isRunning;
 
-        if (!playing) this.updateNowPlaying();
+        if (!playing) { this._lastStatus = null; this.updateNowPlaying(); }
     }
 
     updateCurrentImages(images) {
@@ -922,7 +1040,7 @@ class ChromecastSlideshowController {
         };
 
         try {
-            const response = await fetch('/api/settings', {
+            const response = await this.api('/api/settings', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(settings)
@@ -973,7 +1091,7 @@ class ChromecastSlideshowController {
     // Screen Schedule Methods
     async loadSchedule() {
         try {
-            const response = await fetch('/api/schedule');
+            const response = await this.api('/api/schedule');
             this.renderSchedule(await response.json());
         } catch (error) {
             this.logMessage(`Error loading schedule: ${error.message}`, 'error');
@@ -987,7 +1105,7 @@ class ChromecastSlideshowController {
             off_time: this.scheduleOffTimeEl.value
         };
         try {
-            const response = await fetch('/api/schedule', {
+            const response = await this.api('/api/schedule', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -1011,7 +1129,7 @@ class ChromecastSlideshowController {
         btn.textContent = state === 'on' ? 'Turning on…' : 'Turning off…';
         this.logMessage(`Running "${state}" sequence now (first time on a screen may need you to press Allow on the TV)`, 'info');
         try {
-            const response = await fetch(`/api/schedule/run/${state}`, { method: 'POST' });
+            const response = await this.api(`/api/schedule/run/${state}`, { method: 'POST' });
             const result = await response.json();
             if (!response.ok) throw new Error(result.error || `Failed to run ${state}`);
             this.logMessage(this.describeScheduleResult(result), result.ok ? 'success' : 'error');
@@ -1027,7 +1145,7 @@ class ChromecastSlideshowController {
     async checkScreens() {
         this.scheduleScreensEl.textContent = 'Checking…';
         try {
-            const response = await fetch('/api/schedule/power-states');
+            const response = await this.api('/api/schedule/power-states');
             this.renderScreenStates(await response.json());
         } catch (error) {
             this.scheduleScreensEl.textContent = '—';
@@ -1080,7 +1198,7 @@ class ChromecastSlideshowController {
      */
     async loadPlaylist() {
         try {
-            const response = await fetch('/api/playlist');
+            const response = await this.api('/api/playlist');
             const data = await response.json();
 
             this.isVirtualPlaylist = !!data.virtual;
@@ -1088,7 +1206,9 @@ class ChromecastSlideshowController {
             if (this.isVirtualPlaylist) {
                 this.playlistItems = data.items || [];
                 this.playlistLabelEl.textContent = 'Now Playing:';
-                this.playlistNameEl.textContent = `(Playlist) ${data.virtual_name || 'All Shows'}`;
+                this.playlistNameEl.textContent = data.virtual_kind === 'show'
+                    ? (data.virtual_name || (data.items[0] && data.items[0].directory_name) || '')
+                    : `(Playlist) ${data.virtual_name || 'All Shows'}`;
                 this.playlistDirtyEl.style.display = 'none';
             } else if (this.selection.type === 'all-shows' && this.allShowsQueue) {
                 // All Shows loaded but not yet playing.
@@ -1109,7 +1229,12 @@ class ChromecastSlideshowController {
                 this.playlistNameEl.textContent = this.selection.name;
                 this.playlistDirtyEl.style.display = 'none';
             } else {
+                // Name and items come from the one response, so the heading
+                // can never describe a different playlist to the list below.
                 this.playlistItems = data.items || [];
+                if (data.playlist_name !== undefined) {
+                    this.currentSavedPlaylistName = data.playlist_name || 'New Playlist';
+                }
                 this.playlistLabelEl.textContent = 'Now Playing:';
                 this.playlistNameEl.textContent = `(Playlist) ${this.currentSavedPlaylistName}`;
             }
@@ -1155,7 +1280,7 @@ class ChromecastSlideshowController {
         const div = document.createElement('div');
         const broken = !item.is_valid;
         div.className = `playlist-item ${broken ? 'invalid item-broken' : ''}`;
-        div.draggable = true;
+        div.draggable = !!this.editing;
         div.dataset.itemId = item.id;
 
         const durationOptions = [1, 2, 5, 10, 15, 20, 30, 45, 60]
@@ -1190,8 +1315,8 @@ class ChromecastSlideshowController {
             </div>
             <div class="playlist-item-info">
                 <div class="playlist-item-name">${item.directory_name}${brokenBadge}</div>
-                <span class="now-playing-badge" style="display:none"></span>
             </div>
+            <span class="playlist-item-time"></span>
             ${durationCell}
             ${actionsCell}
         `;
@@ -1206,6 +1331,52 @@ class ChromecastSlideshowController {
 
         // Load thumbnail for this directory
         this.loadPlaylistItemThumbnail(item.directory_path, div);
+    }
+
+    // --- Recently Played ---
+
+    async loadRecent() {
+        if (!this.recentListEl) return;
+        const zone = this.zone;
+        try {
+            const data = await (await this.api('/api/recent')).json();
+            if (zone !== this.zone) return;   // zone switched while loading
+            this.renderRecent(data.shows || []);
+        } catch (e) { /* keep what's shown */ }
+    }
+
+    renderRecent(shows) {
+        if (!shows.length) {
+            this.recentListEl.innerHTML = '<div class="no-playlist-items">Nothing played yet.</div>';
+            return;
+        }
+        this.recentListEl.innerHTML = '';
+        for (const show of shows) {
+            const row = document.createElement('div');
+            row.className = 'recent-item' + (show.available ? '' : ' recent-missing');
+            row.title = show.available ? `Play ${show.directory_name}` : 'This folder no longer exists';
+            const placeholder = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Crect width='40' height='40' fill='%23f0f0f0'/%3E%3C/svg%3E";
+            row.innerHTML = `
+                <div class="playlist-item-thumbnail"><img class="thumbnail-img" alt="" src="${placeholder}"></div>
+                <div class="recent-item-info">
+                    <div class="playlist-item-name"></div>
+                    ${show.available ? '' : '<div class="recent-item-when">Folder missing</div>'}
+                </div>
+                <svg class="recent-item-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>`;
+            // textContent, not innerHTML: folder names are user data.
+            row.querySelector('.playlist-item-name').textContent = show.directory_name;
+            if (show.available) {
+                row.addEventListener('click', () => this.playRecent(show));
+                this.loadPlaylistItemThumbnail(show.directory_path, row);
+            }
+            this.recentListEl.appendChild(row);
+        }
+    }
+
+    async playRecent(show) {
+        this.logMessage(`Playing again: ${show.directory_name}`, 'info');
+        await this.loadShow(show.directory_path);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
     async loadPlaylistItemThumbnail(directoryPath, itemElement) {
@@ -1296,7 +1467,7 @@ class ChromecastSlideshowController {
     async createPlaylist() {
         this._suppressDirty = true;
         try {
-            const response = await fetch('/api/playlist/clear', { method: 'DELETE' });
+            const response = await this.api('/api/playlist/clear', { method: 'DELETE' });
             if (response.ok) {
                 this.markClean('New Playlist', null);
                 this.logMessage('New playlist created', 'success');
@@ -1339,13 +1510,13 @@ class ChromecastSlideshowController {
         try {
             let response;
             if (id !== null) {
-                response = await fetch(`/api/saved-playlists/${id}`, {
+                response = await this.api(`/api/saved-playlists/${id}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ name })
                 });
             } else {
-                response = await fetch('/api/saved-playlists', {
+                response = await this.api('/api/saved-playlists', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ name })
@@ -1377,9 +1548,22 @@ class ChromecastSlideshowController {
         this.loadPlaylistDropdown.style.display = 'none';
     }
 
+    /** Show or hide the playlist editing bar (Add Show / Save Playlist). */
+    setEditing(on) {
+        this.editing = !!on;
+        this.editBarEl.style.display = on ? '' : 'none';
+        // Durations, delete buttons and drag-to-reorder belong to editing
+        // too; outside it the rows are just the list of what's on.
+        this.playlistListEl.classList.toggle('editing', this.editing);
+        this.playlistListEl.querySelectorAll('.playlist-item').forEach(el => {
+            el.draggable = this.editing && !this.isVirtualPlaylist;
+        });
+        if (!on && this.pickerMode === 'add') this.closePicker();
+    }
+
     async showLoadDropdown() {
         try {
-            const response = await fetch('/api/saved-playlists');
+            const response = await this.api('/api/saved-playlists');
             const playlists = await response.json();
             this.loadPlaylistDropdown.innerHTML = '';
 
@@ -1424,8 +1608,20 @@ class ChromecastSlideshowController {
                 e.stopPropagation();
                 this.hideLoadDropdown();
                 this.createPlaylist();
+                this.setEditing(true);
             });
             this.loadPlaylistDropdown.appendChild(createItem);
+
+            // Editing tools live behind this, not on the main screen.
+            const editItem = document.createElement('div');
+            editItem.className = 'playlist-dropdown-item playlist-dropdown-edit';
+            editItem.innerHTML = '<span class="playlist-dropdown-item-name">✎ Edit playlist</span>';
+            editItem.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.hideLoadDropdown();
+                this.setEditing(true);
+            });
+            this.loadPlaylistDropdown.appendChild(editItem);
 
             this.loadPlaylistDropdown.style.display = 'block';
         } catch (error) {
@@ -1436,10 +1632,10 @@ class ChromecastSlideshowController {
     async loadSavedPlaylist(id, name) {
         this.hideLoadDropdown();
         // Stop any running slideshow before swapping the playlist
-        try { await fetch('/api/playlist/stop', { method: 'POST' }); } catch (_) {}
+        try { await this.api('/api/playlist/stop', { method: 'POST' }); } catch (_) {}
         this._suppressDirty = true;
         try {
-            const response = await fetch(`/api/saved-playlists/${id}/load`, { method: 'POST' });
+            const response = await this.api(`/api/saved-playlists/${id}/load`, { method: 'POST' });
             if (response.ok) {
                 const data = await response.json();
                 this.markClean(data.name, data.id);
@@ -1480,7 +1676,7 @@ class ChromecastSlideshowController {
 
     async startPlaylist() {
         try {
-            const response = await fetch('/api/playlist/start', { method: 'POST' });
+            const response = await this.api('/api/playlist/start', { method: 'POST' });
             if (!response.ok) {
                 const error = await response.json();
                 this.logMessage(`Error starting playlist: ${error.error}`, 'error');
@@ -1492,7 +1688,7 @@ class ChromecastSlideshowController {
 
     async pausePlaylist() {
         try {
-            const response = await fetch('/api/playlist/pause', { method: 'POST' });
+            const response = await this.api('/api/playlist/pause', { method: 'POST' });
             if (!response.ok) {
                 const error = await response.json();
                 this.logMessage(`Error pausing playlist: ${error.error}`, 'error');
@@ -1504,7 +1700,7 @@ class ChromecastSlideshowController {
 
     async skipPlaylist() {
         try {
-            const response = await fetch('/api/playlist/skip', { method: 'POST' });
+            const response = await this.api('/api/playlist/skip', { method: 'POST' });
             if (!response.ok) {
                 const error = await response.json();
                 this.logMessage(`Error skipping playlist item: ${error.error}`, 'error');
@@ -1516,7 +1712,7 @@ class ChromecastSlideshowController {
 
     async loadPlaylistStatus() {
         try {
-            const response = await fetch('/api/playlist/status');
+            const response = await this.api('/api/playlist/status');
             const status = await response.json();
 
             console.log('📡 SYNC: loadPlaylistStatus got:', { running: status.running, current_item_id: status.current_item?.id, current_item_name: status.current_item?.directory_name });
@@ -1566,19 +1762,7 @@ class ChromecastSlideshowController {
     }
 
     highlightCurrentPlaylistItem(status) {
-        // Remove highlighting from all playlist items
-        const allItems = this.playlistListEl.querySelectorAll('.playlist-item');
-        allItems.forEach(item => {
-            item.classList.remove('currently-playing');
-        });
-
-        // Add highlighting to the current item if the playlist is running
-        if (status.running && status.current_item) {
-            const currentItemElement = this.playlistListEl.querySelector(`[data-item-id="${status.current_item.id}"]`);
-            if (currentItemElement) {
-                currentItemElement.classList.add('currently-playing');
-            }
-        }
+        this.updateNowPlaying(status);
     }
 
     // Drag and Drop functionality
@@ -1645,7 +1829,7 @@ class ChromecastSlideshowController {
         const itemIds = newOrder.map(item => item.id);
 
         try {
-            const response = await fetch('/api/playlist/reorder', {
+            const response = await this.api('/api/playlist/reorder', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ item_ids: itemIds })

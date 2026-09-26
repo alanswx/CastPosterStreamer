@@ -4,13 +4,17 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Virtual Poster Display</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v=asset_version) }}">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
 </head>
 <body>
     <div class="container">
         <header>
             <h1>Virtual Poster Display</h1>
+            <div class="zone-toggle" id="zone-toggle">
+                <button class="zone-btn is-active" data-zone="barn">Barn</button>
+                <button class="zone-btn" data-zone="kitchen">Kitchen</button>
+            </div>
         </header>
 
         <main>
@@ -45,9 +49,17 @@
                             <button id="load-playlist" class="btn btn-secondary btn-sm">Load Playlist ▾</button>
                             <div id="load-playlist-dropdown" class="playlist-dropdown" style="display:none"></div>
                         </div>
-                        <button id="add-show" class="btn btn-secondary btn-sm">Add Show</button>
-                        <button id="save-playlist" class="btn btn-secondary btn-sm">Save Playlist</button>
                     </div>
+                </div>
+
+                <!-- Playlist editing tools, hidden until "Edit playlist" is
+                     chosen from the Load Playlist menu: they're rarely needed
+                     and cost a whole row on a phone. -->
+                <div id="playlist-edit-bar" class="playlist-edit-bar" style="display:none">
+                    <span class="playlist-edit-label">Editing playlist</span>
+                    <button id="add-show" class="btn btn-secondary btn-sm">+ Add Show</button>
+                    <button id="save-playlist" class="btn btn-secondary btn-sm">Save Playlist</button>
+                    <button id="playlist-edit-done" class="btn btn-primary btn-sm">Done</button>
                 </div>
 
                 <!-- Collapsible show picker -->
@@ -65,6 +77,15 @@
                     <div class="playlist-list" id="playlist-list">
                         <div class="no-playlist-items">Nothing loaded. Use "Load Show" or "Load Playlist" above.</div>
                     </div>
+                </div>
+            </section>
+
+            <!-- Recently Played: shows this zone has put on screen, newest
+                 first. Tapping one plays it again. -->
+            <section class="panel">
+                <h2>Recently Played</h2>
+                <div class="recent-list" id="recent-list">
+                    <div class="no-playlist-items">Nothing played yet.</div>
                 </div>
             </section>
 
@@ -158,6 +179,6 @@
         </main>
     </div>
 
-    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/app.js', v=asset_version) }}"></script>
 </body>
 </html>

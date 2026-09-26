@@ -15,6 +15,8 @@ DATA_FILES = [
     'chromecast_subprocess.py',
     'scheduler.py',
     'tv_power.py',
+    'frame_controller.py',
+    'zone_backends.py',
     ('static', glob('static/**/*', recursive=True)),
     ('templates', glob('templates/**/*.*', recursive=True)),
 ]
