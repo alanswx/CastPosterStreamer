@@ -9,7 +9,7 @@ body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
     line-height: 1.6;
     color: #333;
-    background-color: #f5f5f5;
+    background-color: #fff;
 }
 
 .container {
@@ -20,27 +20,27 @@ body {
 
 /* Header */
 header {
-    background: #2c3e50;
-    color: white;
-    padding: 1rem 0;
-    margin-bottom: 2rem;
-    border-radius: 0 0 8px 8px;
+    position: relative;
+    background: #fff;
+    color: #2c3e50;
+    padding: 1.25rem 0 1rem;
+    margin-bottom: 1.5rem;
+    border-bottom: 1px solid #e4e7eb;
+    text-align: center;
 }
 
 header h1 {
-    display: inline-block;
     margin: 0;
+    font-size: 1.8rem;
+    letter-spacing: 0.01em;
 }
 
-.status-indicator {
+/* Connection state now lives in the Status & Error Log heading */
+#connection-status {
     float: right;
-    margin-top: 0.5rem;
-}
-
-.status-indicator span {
-    padding: 0.25rem 0.75rem;
+    padding: 0.1rem 0.6rem;
     border-radius: 4px;
-    font-size: 0.9rem;
+    font-size: 0.75rem;
     font-weight: 500;
 }
 
@@ -69,6 +69,8 @@ header h1 {
     color: #2c3e50;
     border-bottom: 2px solid #3498db;
     padding-bottom: 0.5rem;
+    /* Matches .playlist-header h2 so every panel heading is the same size */
+    font-size: 1.2rem;
 }
 
 /* Buttons */
@@ -632,12 +634,6 @@ header h1 {
     color: #2c3e50;
 }
 
-.playlist-item-path {
-    font-size: 0.8rem;
-    color: #7f8c8d;
-    font-family: monospace;
-}
-
 .playlist-item-duration {
     margin-left: 1rem;
     display: flex;
@@ -797,6 +793,115 @@ header h1 {
     width: 70px;
     padding: 0.3rem 0.5rem;
     font-size: 0.9rem;
+}
+
+/* "Now Playing" marker on the playing row */
+.now-playing-badge {
+    display: inline-block;
+    /* The row's info column is a stretch flexbox, so pin the badge to its
+       own width rather than letting it span the whole row. */
+    align-self: flex-start;
+    width: fit-content;
+    margin-top: 0.15rem;
+    padding: 0.05rem 0.45rem;
+    border-radius: 3px;
+    background: #27ae60;
+    color: #fff;
+    font-size: 0.72rem;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.settings-interval {
+    margin-bottom: 1rem;
+}
+
+/* Transport buttons: centred under the title, no panel chrome */
+.player-buttons {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    justify-content: center;
+    margin: 0 0 1.5rem;
+}
+
+.player-buttons .btn {
+    flex: 0 0 auto;
+    min-width: 92px;
+}
+
+.playlist-dropdown-create {
+    border-top: 1px solid #e4e7eb;
+    color: #2980b9;
+    font-weight: 500;
+}
+
+.playlist-dropdown-all {
+    border-bottom: 1px solid #e4e7eb;
+    font-weight: 600;
+}
+
+/* Collapsible show picker (lives inside the playlist panel) */
+.show-picker {
+    border: 1px solid #d8dde2;
+    border-radius: 6px;
+    padding: 0.75rem;
+    margin-bottom: 1rem;
+    background: #fcfdfe;
+}
+
+.picker-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.6rem;
+    flex-wrap: wrap;
+}
+
+.picker-title {
+    font-weight: 600;
+    color: #2c3e50;
+    white-space: nowrap;
+}
+
+.picker-path {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.8rem;
+    color: #7f8c8d;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    direction: rtl;          /* keep the tail of long paths visible */
+    text-align: left;
+}
+
+.show-picker .directory-list {
+    max-height: 220px;
+    overflow-y: auto;
+}
+
+/* Playlist rows whose folder is missing */
+.playlist-item.item-broken {
+    background: #fff5f5;
+    border-color: #e74c3c;
+}
+
+.playlist-item.item-broken .playlist-item-name {
+    color: #c0392b;
+}
+
+
+.item-broken-badge {
+    display: inline-block;
+    margin-left: 0.5rem;
+    padding: 0.05rem 0.4rem;
+    border-radius: 3px;
+    background: #e74c3c;
+    color: #fff;
+    font-size: 0.7rem;
+    font-weight: 600;
+    vertical-align: middle;
 }
 
 /* Screen schedule */
@@ -1029,4 +1134,211 @@ header h1 {
 .btn-sm {
     padding: 0.2rem 0.6rem;
     font-size: 0.8rem;
+}
+
+/* Transport controls: bare coloured glyphs, no button chrome */
+.icon-btn {
+    background: none;
+    border: none;
+    padding: 0 0.55rem;
+    margin: 0;
+    line-height: 0;
+    cursor: pointer;
+    transition: transform 0.15s ease, opacity 0.15s ease;
+}
+
+.icon-btn svg {
+    width: 42px;
+    height: 42px;
+    fill: currentColor;
+    display: block;
+}
+
+/* Pause swaps to a resume arrow while paused */
+.icon-pause .ic-resume { display: none; }
+.icon-pause.is-paused .ic-pause { display: none; }
+.icon-pause.is-paused .ic-resume { display: block; }
+
+.icon-btn:hover:not(:disabled) { transform: scale(1.12); }
+.icon-btn:disabled { opacity: 0.28; cursor: not-allowed; }
+
+.icon-play  { color: #27ae60; }
+.icon-pause { color: #f39c12; }
+.icon-skip  { color: #7f8c8d; }
+.icon-stop  { color: #e74c3c; }
+
+/* Playlist action buttons: dark text on light grey reads better than
+   white-on-grey at this size */
+.playlist-actions .btn,
+.playlist-actions .btn:hover {
+    background: #e4e7eb;
+    color: #2c3e50;
+    font-weight: 500;
+}
+
+.playlist-actions .btn:hover { background: #d4dae0; }
+
+/* ---------------------------------------------------------------------------
+   Small screens (phones)
+
+   The desktop layout assumes wide rows: headings sit beside their button
+   groups, and each playlist row is one horizontal strip. Below 640px those
+   wrap badly and the page scrolls forever, so button groups become even
+   grids, playlist rows are compacted onto a single line, and the picker
+   scrolls within itself instead of pushing the list off-screen.
+   --------------------------------------------------------------------------- */
+@media (max-width: 640px) {
+    .container { padding: 0 10px; }
+
+    header {
+        padding: 0.9rem 0 0.7rem;
+        margin-bottom: 0.9rem;
+    }
+
+    header h1 { font-size: 1.35rem; }
+
+    .panel {
+        padding: 0.8rem;
+        margin-bottom: 0.8rem;
+        border-radius: 6px;
+    }
+
+    .panel h2 {
+        font-size: 1.05rem;
+        margin-bottom: 0.6rem;
+    }
+
+    /* The desktop .btn margins fight gap-based layouts on narrow screens */
+    .playlist-actions .btn,
+    .control-buttons .btn {
+        margin: 0;
+    }
+
+    /* Transport: four evenly spaced icons, sized for thumbs */
+    .player-buttons {
+        display: flex;
+        justify-content: space-evenly;
+        gap: 0.2rem;
+        margin-bottom: 0.9rem;
+    }
+
+    .icon-btn { padding: 0.2rem 0.4rem; }
+    .icon-btn svg { width: 38px; height: 38px; }
+
+    /* Heading stacks above its controls, which sit in an even 2x2 grid */
+    .playlist-header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.5rem;
+    }
+
+    .playlist-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.35rem;
+    }
+
+    .playlist-actions .btn { width: 100%; }
+    .load-playlist-wrapper { position: relative; }
+    .load-playlist-wrapper .btn { width: 100%; }
+
+    .playlist-dropdown {
+        width: 100%;
+        min-width: 0;
+        left: 0;
+        right: auto;
+    }
+
+    /* Playlist rows: keep everything on one line, just smaller */
+    .playlist-item {
+        flex-wrap: nowrap;
+        padding: 0.45rem 0.4rem;
+        gap: 0.4rem;
+    }
+
+    .playlist-item-number {
+        font-size: 0.8rem;
+        min-width: 1.4rem;
+    }
+
+    .playlist-item-thumbnail,
+    .playlist-item-thumbnail img {
+        width: 34px;
+        height: 34px;
+        flex: 0 0 auto;
+    }
+
+    .playlist-item-info {
+        flex: 1 1 auto;
+        min-width: 0;
+        gap: 0.1rem;
+    }
+
+    .playlist-item-name {
+        font-size: 0.88rem;
+        line-height: 1.25;
+        overflow-wrap: anywhere;
+    }
+
+    .now-playing-badge { font-size: 0.65rem; }
+
+    .playlist-item-duration {
+        margin-left: 0;
+        flex: 0 0 auto;
+    }
+
+    .playlist-item-duration select {
+        font-size: 0.72rem;
+        padding: 0.15rem;
+    }
+
+    .playlist-item-actions { flex: 0 0 auto; }
+    .playlist-item-remove { font-size: 0.85rem; }
+
+    /* Dragging to reorder is impractical on touch; reclaim the space */
+    .playlist-item-drag-handle { display: none; }
+
+    /* Picker scrolls within itself rather than burying the list */
+    .show-picker { padding: 0.5rem; }
+    .show-picker .directory-list { max-height: 150px; }
+    .directory-item { padding: 0.5rem; font-size: 0.88rem; }
+
+    .picker-header { gap: 0.35rem; }
+
+    .picker-path {
+        flex: 1 1 100%;
+        order: 3;
+        font-size: 0.7rem;
+    }
+
+    .directory-thumbnail-grid {
+        max-height: 110px;
+        grid-template-columns: repeat(auto-fill, minmax(48px, 1fr));
+    }
+
+    .directory-thumbnail-grid img { width: 48px; height: 48px; }
+
+    /* Settings: label/input pairs stay together, one per line */
+    .schedule-row {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        align-items: center;
+        gap: 0.4rem 0.6rem;
+    }
+
+    .schedule-enable { grid-column: 1 / -1; }
+    .schedule-row input[type="time"] { width: 100%; }
+    .control-description { font-size: 0.76rem; }
+
+    .slideshow-status .status-item {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0;
+    }
+
+    /* Device rows and the log take a lot of height for little value here */
+    .device-item { padding: 0.6rem; }
+    .device-list { max-height: 200px; }
+    .log-container { max-height: 160px; }
+    #connection-status { font-size: 0.68rem; }
 }

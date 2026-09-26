@@ -3,54 +3,67 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chromecast Slideshow Controller</title>
+    <title>Virtual Poster Display</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>Chromecast Slideshow Controller</h1>
-            <div class="status-indicator">
-                <span id="connection-status" class="status-disconnected">Disconnected</span>
-            </div>
+            <h1>Virtual Poster Display</h1>
         </header>
 
         <main>
-            <!-- Directory Selection Section -->
-            <section class="panel">
-                <div class="directory-browser">
-                    <span id="current-path" style="display:none"></span>
-                    <div class="directory-action-row">
-                        <button class="btn btn-primary" onclick="controller.browseDirectory('/Volumes')">Browse Slideshows</button>
-                        <button id="add-directory-to-playlist" class="btn btn-success" disabled>Add Slideshow to Playlist</button>
-                    </div>
-                    <div class="directory-list" id="directory-list"></div>
-                    <div class="directory-preview">
-                        <div class="directory-thumbnail-grid" id="directory-thumbnails">
-                            <div class="no-preview">Browse to a directory to see preview</div>
-                        </div>
-                    </div>
-                </div>
-            </section>
+            <!-- Player controls: no panel chrome, just centred under the title -->
+            <!-- Inline SVG rather than unicode glyphs: ⏸ ⏭ ⏹ default to emoji
+                 presentation, which iOS renders in fixed colours and ignores
+                 CSS `color` on. SVG with currentColor behaves everywhere. -->
+            <div class="player-buttons">
+                <button id="start-playlist" class="icon-btn icon-play" title="Play">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+                </button>
+                <button id="pause-slideshow" class="icon-btn icon-pause" title="Pause" disabled>
+                    <svg class="ic-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>
+                    <svg class="ic-resume" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+                </button>
+                <button id="skip-slideshow" class="icon-btn icon-skip" title="Skip" disabled>
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14l9-7zm11 0h3v14h-3z"/></svg>
+                </button>
+                <button id="stop-slideshow" class="icon-btn icon-stop" title="Stop" disabled>
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6h12v12H6z"/></svg>
+                </button>
+                <input type="checkbox" id="rotation-enabled" checked style="display:none">
+            </div>
 
-            <!-- Playlist Management Section -->
+            <!-- Now Playing / Up Next Section (picker lives inside) -->
             <section class="panel">
                 <div class="playlist-header">
-                    <h2>Current Playlist: <span id="playlist-name">New Playlist</span><span id="playlist-dirty" class="dirty-indicator" style="display:none"> *</span></h2>
+                    <h2><span id="playlist-label">Now Playing:</span> <span id="playlist-name">New Playlist</span><span id="playlist-dirty" class="dirty-indicator" style="display:none"> *</span></h2>
                     <div class="playlist-actions">
-                        <button id="create-playlist" class="btn btn-secondary btn-sm">New</button>
-                        <button id="save-playlist" class="btn btn-secondary btn-sm">Save</button>
+                        <button id="load-show" class="btn btn-secondary btn-sm">Load Show</button>
                         <div class="load-playlist-wrapper">
-                            <button id="load-playlist" class="btn btn-secondary btn-sm">Load ▾</button>
+                            <button id="load-playlist" class="btn btn-secondary btn-sm">Load Playlist ▾</button>
                             <div id="load-playlist-dropdown" class="playlist-dropdown" style="display:none"></div>
                         </div>
+                        <button id="add-show" class="btn btn-secondary btn-sm">Add Show</button>
+                        <button id="save-playlist" class="btn btn-secondary btn-sm">Save Playlist</button>
                     </div>
+                </div>
+
+                <!-- Collapsible show picker -->
+                <div id="show-picker" class="show-picker" style="display:none">
+                    <div class="picker-header">
+                        <span id="picker-title" class="picker-title">Choose a show</span>
+                        <button id="picker-close" class="btn btn-secondary btn-sm" title="Close picker">✕</button>
+                    </div>
+                    <div class="directory-list" id="directory-list"></div>
+                    <span id="current-path" style="display:none"></span>
+                    <span id="directory-thumbnails" style="display:none"></span>
                 </div>
 
                 <div class="playlist-container">
                     <div class="playlist-list" id="playlist-list">
-                        <div class="no-playlist-items">No items in playlist. Browse to a directory above and click "Add This Directory to Playlist".</div>
+                        <div class="no-playlist-items">Nothing loaded. Use "Load Show" or "Load Playlist" above.</div>
                     </div>
                 </div>
             </section>
@@ -68,43 +81,17 @@
             </div>
 
 
-            <!-- Slideshow Controls Section -->
+            <!-- Settings Section -->
             <section class="panel">
+                <h2>Settings</h2>
                 <div class="controls">
-                    <div class="control-buttons slideshow-main-buttons">
-                        <button id="start-single-directory" class="btn btn-success" disabled style="visibility: hidden; position: absolute;">▶️ Current Directory Only</button>
-                        <button id="start-playlist" class="btn btn-success" disabled>▶️ Start Playlist</button>
-                        <button id="pause-slideshow" class="btn btn-warning" disabled>⏸️ Pause</button>
-                        <button id="skip-slideshow" class="btn btn-secondary" disabled>⏭️ Skip</button>
-                        <button id="stop-slideshow" class="btn btn-danger" disabled>⏹️ Stop</button>
-                    </div>
-                    <div class="control-group interval-group">
-                        <label for="slideshow-interval">Image interval (seconds):</label>
+                    <div class="interval-group settings-interval">
+                        <label for="slideshow-interval">Image interval (s):</label>
                         <input type="number" id="slideshow-interval" min="1" max="3600" value="5">
-                        <input type="checkbox" id="rotation-enabled" checked style="display:none">
                     </div>
-                </div>
-
-                <div class="slideshow-status" id="slideshow-status">
-                    <div class="status-item">
-                        <span class="label">Status:</span>
-                        <span id="slideshow-running" class="value">Stopped</span>
-                    </div>
-                    <span id="slideshow-mode" style="display:none"></span>
-                    <div class="status-item">
-                        <span class="label">Progress:</span>
-                        <div id="slideshow-progress" class="progress-display"></div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Screen Schedule Section -->
-            <section class="panel">
-                <h2>Screen Schedule</h2>
-                <div class="controls">
                     <div class="schedule-row">
                         <label class="schedule-enable">
-                            <input type="checkbox" id="schedule-enabled"> Enabled
+                            <input type="checkbox" id="schedule-enabled"> Schedule enabled
                         </label>
                         <label for="schedule-on-time">On at</label>
                         <input type="time" id="schedule-on-time" value="08:00">
@@ -151,7 +138,9 @@
 
             <!-- Error Log Section -->
             <section class="panel">
-                <h2>Status & Error Log</h2>
+                <h2>Status &amp; Error Log
+                    <span id="connection-status" class="status-disconnected">Disconnected</span>
+                </h2>
                 <div class="log-controls">
                     <button id="clear-log" class="btn btn-secondary">Clear Log</button>
                     <button id="test-websocket" class="btn btn-primary">🧪 Test WebSocket</button>
