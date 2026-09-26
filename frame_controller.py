@@ -458,6 +458,18 @@ class FrameController:
 
     # -------------------------------------------------------------- playback
 
+    def _record_play(self, item: Dict[str, Any]):
+        """Add a show to the kitchen's Recently Played once something from it
+        is actually on the panel. Never allowed to disturb playback."""
+        from settings_manager import ZONE_KITCHEN
+        try:
+            self.settings_manager.record_play(ZONE_KITCHEN, item["directory_path"],
+                                              item.get("directory_name"))
+            if self.socketio:
+                self.socketio.emit("recent_updated", {"zone": ZONE_KITCHEN})
+        except Exception as e:
+            self.logger.warning(f"[frame] could not record play history: {e}")
+
     def _active_items(self) -> List[Dict[str, Any]]:
         if self.virtual_items is not None:
             return self.virtual_items
@@ -591,6 +603,7 @@ class FrameController:
 
                 failures = 0
                 self.current_item_start = time.time()
+                self._record_play(item)
                 started = time.time()
                 idx = 0
                 interval = self._interval()

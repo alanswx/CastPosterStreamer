@@ -71,6 +71,7 @@ class ChromecastSlideshowController {
 
         // Playlist elements
         this.playlistListEl = document.getElementById('playlist-list');
+        this.recentListEl = document.getElementById('recent-list');
         this.playlistNameEl = document.getElementById('playlist-name');
         this.playlistDirtyEl = document.getElementById('playlist-dirty');
         this.savePlaylistBtn = document.getElementById('save-playlist');
@@ -275,10 +276,24 @@ class ChromecastSlideshowController {
 
         this.socket.onAny(() => { this._lastEventAt = Date.now(); });
 
+        // Recently Played: a new show on screen adds to it, and stopping puts
+        // the show that was playing back into it.
+        this.socket.on('recent_updated', (data) => {
+            if (!data || data.zone === this.zone) this.loadRecent();
+        });
+        this.socket.on('playlist_stopped', () => { if (this.zone === 'barn') this.loadRecent(); });
+        this.socket.on('slideshow_status', () => { if (this.zone === 'barn') this.loadRecent(); });
+        // Keeps the "5 min ago" labels current and catches anything missed.
+        setInterval(() => this.loadRecent(), 60000);
+
         // The kitchen Frame reports through its own event; ignore whichever
         // zone isn't on screen so the two never overwrite each other's status.
         this.socket.on('kitchen_status_update', (status) => {
             if (this.zone !== 'kitchen') return;
+            if (this._kitchenRunning !== undefined && this._kitchenRunning !== !!status.running) {
+                this.loadRecent();
+            }
+            this._kitchenRunning = !!status.running;
             try {
                 this.updateSlideshowControls(status.running, 'playlist');
                 this.updatePlaylistProgress(status);
@@ -335,6 +350,7 @@ class ChromecastSlideshowController {
         } catch (e) { /* leave it false */ }
         await this.loadPlaylist();
         await this.refreshPlaybackState();
+        await this.loadRecent();
         await this.loadSchedule();
         // Removed loadSlideshowStatus() - using playlist system exclusively
         // Removed loadPlaylistStatus() - rely on WebSocket updates for real-time status
@@ -1298,6 +1314,62 @@ class ChromecastSlideshowController {
 
         // Load thumbnail for this directory
         this.loadPlaylistItemThumbnail(item.directory_path, div);
+    }
+
+    // --- Recently Played ---
+
+    async loadRecent() {
+        if (!this.recentListEl) return;
+        const zone = this.zone;
+        try {
+            const data = await (await this.api('/api/recent')).json();
+            if (zone !== this.zone) return;   // zone switched while loading
+            this.renderRecent(data.shows || []);
+        } catch (e) { /* keep what's shown */ }
+    }
+
+    renderRecent(shows) {
+        if (!shows.length) {
+            this.recentListEl.innerHTML = '<div class="no-playlist-items">Nothing played yet.</div>';
+            return;
+        }
+        this.recentListEl.innerHTML = '';
+        for (const show of shows) {
+            const row = document.createElement('div');
+            row.className = 'recent-item' + (show.available ? '' : ' recent-missing');
+            row.title = show.available ? `Play ${show.directory_name}` : 'This folder no longer exists';
+            const placeholder = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Crect width='40' height='40' fill='%23f0f0f0'/%3E%3C/svg%3E";
+            row.innerHTML = `
+                <div class="playlist-item-thumbnail"><img class="thumbnail-img" alt="" src="${placeholder}"></div>
+                <div class="recent-item-info">
+                    <div class="playlist-item-name"></div>
+                    <div class="recent-item-when">${show.available ? this.timeAgo(show.played_at) : 'Folder missing'}</div>
+                </div>
+                <span class="recent-item-play" aria-hidden="true">▶</span>`;
+            // textContent, not innerHTML: folder names are user data.
+            row.querySelector('.playlist-item-name').textContent = show.directory_name;
+            if (show.available) {
+                row.addEventListener('click', () => this.playRecent(show));
+                this.loadPlaylistItemThumbnail(show.directory_path, row);
+            }
+            this.recentListEl.appendChild(row);
+        }
+    }
+
+    async playRecent(show) {
+        this.logMessage(`Playing again: ${show.directory_name}`, 'info');
+        await this.loadShow(show.directory_path);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    timeAgo(epochSeconds) {
+        const mins = Math.max(0, Math.round((Date.now() / 1000 - epochSeconds) / 60));
+        if (mins < 1) return 'just now';
+        if (mins < 60) return `${mins} min ago`;
+        const hrs = Math.round(mins / 60);
+        if (hrs < 24) return `${hrs} hr${hrs === 1 ? '' : 's'} ago`;
+        const days = Math.round(hrs / 24);
+        return days === 1 ? 'yesterday' : `${days} days ago`;
     }
 
     async loadPlaylistItemThumbnail(directoryPath, itemElement) {

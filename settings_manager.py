@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import shutil
+import time
 from typing import Optional, Dict, List, Any
 from pathlib import Path
 
@@ -152,7 +153,43 @@ class SettingsManager:
                     uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            # Shows as they actually started on a zone's screens, for the
+            # Recently Played list. One row per show per zone: replaying a
+            # show moves it to the top rather than listing it twice.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS play_history (
+                    zone TEXT NOT NULL,
+                    directory_path TEXT NOT NULL,
+                    directory_name TEXT NOT NULL,
+                    played_at REAL NOT NULL,
+                    PRIMARY KEY (zone, directory_path)
+                )
+            """)
             conn.commit()
+
+    # --- play history ------------------------------------------------------
+
+    HISTORY_KEEP = 30
+
+    def record_play(self, zone: str, directory_path: str, directory_name: str = None):
+        name = directory_name or os.path.basename(directory_path.rstrip('/')) or directory_path
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO play_history (zone, directory_path, directory_name, played_at)"
+                " VALUES (?, ?, ?, ?)", (zone, directory_path, name, time.time()))
+            conn.execute(
+                "DELETE FROM play_history WHERE zone = ? AND directory_path NOT IN ("
+                " SELECT directory_path FROM play_history WHERE zone = ?"
+                " ORDER BY played_at DESC LIMIT ?)", (zone, zone, self.HISTORY_KEEP))
+            conn.commit()
+
+    def get_recent_plays(self, zone: str, limit: int = 8) -> List[Dict[str, Any]]:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT directory_path, directory_name, played_at FROM play_history"
+                " WHERE zone = ? ORDER BY played_at DESC LIMIT ?", (zone, limit)).fetchall()
+        return [dict(r) for r in rows]
 
     # --- per-zone settings -------------------------------------------------
 

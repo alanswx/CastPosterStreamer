@@ -1370,3 +1370,54 @@ header h1 {
     background: #3498db;
     color: #fff;
 }
+
+/* Recently Played: tap a row to play that show again */
+.recent-list {
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background: white;
+}
+
+.recent-item {
+    display: flex;
+    align-items: center;
+    padding: 0.6rem 0.75rem;
+    border-bottom: 1px solid #eee;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.recent-item:last-child { border-bottom: none; }
+.recent-item:hover { background: #f4f9fd; }
+.recent-item:active { background: #e8f2fb; }
+
+.recent-item-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.recent-item-info .playlist-item-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.recent-item-when {
+    font-size: 0.8rem;
+    color: #95a5a6;
+    margin-top: 0.15rem;
+}
+
+.recent-item-play {
+    color: #27ae60;
+    font-size: 1.1rem;
+    margin-left: 0.75rem;
+}
+
+.recent-item.recent-missing {
+    cursor: default;
+    opacity: 0.5;
+}
+
+.recent-item.recent-missing:hover { background: white; }
+.recent-item.recent-missing .recent-item-play { display: none; }

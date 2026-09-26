@@ -895,6 +895,32 @@ def get_playlist_status():
     return jsonify(status)
 
 
+def _now_playing_path(zone: str):
+    """The folder a zone is showing right now, or None."""
+    if zone == ZONE_KITCHEN:
+        item = frame_controller.current_item if frame_controller.is_running else None
+        return item.get('directory_path') if item else None
+    if slideshow_controller.is_playlist_running:
+        item = slideshow_controller.get_playlist_status().get('current_item')
+        return item.get('directory_path') if item else None
+    if slideshow_controller.is_slideshow_running:
+        return settings_manager.get_selected_directory(ZONE_BARN)
+    return None
+
+
+@app.route('/api/recent', methods=['GET'])
+def recent_plays():
+    """A zone's recently played shows, newest first — leaving out the one on
+    screen now, which the Now Playing list already shows."""
+    zone = req_zone()
+    playing = _now_playing_path(zone)
+    shows = [s for s in settings_manager.get_recent_plays(zone, limit=9)
+             if s['directory_path'] != playing][:8]
+    for s in shows:
+        s['available'] = os.path.isdir(s['directory_path'])
+    return jsonify({'zone': zone, 'shows': shows})
+
+
 # Saved Playlists API
 @app.route('/api/saved-playlists', methods=['GET'])
 def list_saved_playlists():
