@@ -285,8 +285,14 @@ class ChromecastSlideshowController {
             if (!data || data.zone === this.zone) this.loadRecent();
         });
         this.socket.on('playlist_stopped', () => { if (this.zone === 'barn') this.loadRecent(); });
-        this.socket.on('slideshow_status', () => { if (this.zone === 'barn') this.loadRecent(); });
-        // Keeps the "5 min ago" labels current and catches anything missed.
+        // A single show started or stopped elsewhere (the scheduler, another
+        // device): re-read the barn's state so the row and controls follow.
+        this.socket.on('slideshow_status', () => {
+            if (this.zone !== 'barn') return;
+            this.refreshPlaybackState();
+            this.loadRecent();
+        });
+        // Catches anything the events above missed.
         setInterval(() => this.loadRecent(), 60000);
 
         // The kitchen Frame reports through its own event; ignore whichever
@@ -1347,7 +1353,7 @@ class ChromecastSlideshowController {
                 <div class="playlist-item-thumbnail"><img class="thumbnail-img" alt="" src="${placeholder}"></div>
                 <div class="recent-item-info">
                     <div class="playlist-item-name"></div>
-                    <div class="recent-item-when">${show.available ? this.timeAgo(show.played_at) : 'Folder missing'}</div>
+                    ${show.available ? '' : '<div class="recent-item-when">Folder missing</div>'}
                 </div>
                 <span class="recent-item-play" aria-hidden="true">▶</span>`;
             // textContent, not innerHTML: folder names are user data.
@@ -1364,16 +1370,6 @@ class ChromecastSlideshowController {
         this.logMessage(`Playing again: ${show.directory_name}`, 'info');
         await this.loadShow(show.directory_path);
         window.scrollTo({ top: 0, behavior: 'smooth' });
-    }
-
-    timeAgo(epochSeconds) {
-        const mins = Math.max(0, Math.round((Date.now() / 1000 - epochSeconds) / 60));
-        if (mins < 1) return 'just now';
-        if (mins < 60) return `${mins} min ago`;
-        const hrs = Math.round(mins / 60);
-        if (hrs < 24) return `${hrs} hr${hrs === 1 ? '' : 's'} ago`;
-        const days = Math.round(hrs / 24);
-        return days === 1 ? 'yesterday' : `${days} days ago`;
     }
 
     async loadPlaylistItemThumbnail(directoryPath, itemElement) {

@@ -1493,3 +1493,25 @@ header h1 {
     .playlist-item-time { font-size: 0.82rem; margin-left: 0.5rem; }
     .playlist-header h2 #playlist-name { font-size: 1.2rem; }
 }
+
+/* Larger thumbnails in both lists, and a bigger play arrow in Recently
+   Played; its names match Now Playing's now that the time line is gone. */
+.playlist-item-thumbnail {
+    width: 60px;
+    height: 60px;
+}
+
+.recent-item-play {
+    font-size: 1.7rem;
+    line-height: 1;
+    padding: 0 0.25rem;
+}
+
+@media (max-width: 640px) {
+    .playlist-item-thumbnail,
+    .playlist-item-thumbnail img {
+        width: 52px;
+        height: 52px;
+    }
+    .recent-item-play { font-size: 1.6rem; }
+}
