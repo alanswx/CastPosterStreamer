@@ -350,9 +350,18 @@ def browse_directories():
     # so browsing always starts at the shows folder.
     path = explicit_path or settings_manager.get_library_directory()
 
+    library = Path(settings_manager.get_library_directory())
+
     def list_directory(directory_path):
         items = []
-        if directory_path.parent != directory_path:
+        # "Up" only inside a subfolder of the shows library (e.g. "good ones"),
+        # never at its top or above it: out there are only folders with no
+        # shows, which just confused browsing.
+        try:
+            inside_library = library.resolve() in directory_path.resolve().parents
+        except OSError:
+            inside_library = False
+        if inside_library:
             items.append({'name': '..', 'path': str(directory_path.parent), 'type': 'directory'})
         for item in sorted(directory_path.iterdir()):
             if item.is_dir() and not item.name.startswith('.'):
