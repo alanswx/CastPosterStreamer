@@ -614,12 +614,16 @@ def get_playlist():
     ctl = slideshow_controller if zone == ZONE_BARN else frame_controller
     virtual = ctl.virtual_items
     if virtual is not None:
+        # The kitchen plays a single show as a one-item virtual list; say so,
+        # so the page labels it as a show rather than "(Playlist) France".
+        is_show = len(virtual) == 1 and virtual[0].get('id') == 'loaded-show'
         return jsonify({
             'items': virtual,
             'total_duration': sum(i.get('duration_minutes', 0) for i in virtual),
             'item_count': len(virtual),
             'virtual': True,
             'virtual_name': ctl.virtual_name,
+            'virtual_kind': 'show' if is_show else 'playlist',
             'zone': zone,
         })
 

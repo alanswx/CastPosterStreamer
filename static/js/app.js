@@ -1201,7 +1201,9 @@ class ChromecastSlideshowController {
             if (this.isVirtualPlaylist) {
                 this.playlistItems = data.items || [];
                 this.playlistLabelEl.textContent = 'Now Playing:';
-                this.playlistNameEl.textContent = `(Playlist) ${data.virtual_name || 'All Shows'}`;
+                this.playlistNameEl.textContent = data.virtual_kind === 'show'
+                    ? (data.virtual_name || (data.items[0] && data.items[0].directory_name) || '')
+                    : `(Playlist) ${data.virtual_name || 'All Shows'}`;
                 this.playlistDirtyEl.style.display = 'none';
             } else if (this.selection.type === 'all-shows' && this.allShowsQueue) {
                 // All Shows loaded but not yet playing.
