@@ -703,7 +703,12 @@ class SlideshowController:
         """
         self.stop_playlist()
         self.stop_slideshow()
-        self.settings_manager.save_setting('selected_directory', directory)
+        # The barn's own key: start_slideshow() reads it back through
+        # get_selected_directory(), which looks at "barn.selected_directory"
+        # first. Writing the bare key left that stale, so every show loaded
+        # as whatever had last been stored there.
+        from settings_manager import ZONE_BARN
+        self.settings_manager.save_zone_setting(ZONE_BARN, 'selected_directory', directory)
 
         if self.start_slideshow():
             return {'success': True}

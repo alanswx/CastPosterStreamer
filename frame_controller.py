@@ -21,6 +21,7 @@ import io
 import json
 import logging
 import os
+import re
 import socket
 import threading
 import time
@@ -59,6 +60,9 @@ PANEL_LANDSCAPE = (3840, 2160)
 JPEG_QUALITY = 90
 
 UPLOAD_GAP_SECONDS = 0.5     # consecutive art requests dislike being rushed
+ART_CAPACITY = 200           # our uploads kept on the TV; this LS03R refuses more
+                             # past ~310 distinct images (it lists each one twice)
+EVICT_BATCH = 40             # evict in batches so a long show doesn't evict per image
 WAKE_TIMEOUT_SECONDS = 90
 
 
@@ -355,15 +359,10 @@ class FrameController:
                 if cid:
                     ids.append(cid)
                     continue
-                try:
-                    data = _offload(prepare_image, path)
-                    cid = art.upload(data, file_type="JPEG", matte="none")
-                    self._remember_upload(path, cid)
+                cid = self._upload_one(art, path, keep=ids)
+                if cid:
                     ids.append(cid)
-                    self.logger.info(f"[frame] uploaded {os.path.basename(path)} -> {cid}")
                     time.sleep(UPLOAD_GAP_SECONDS)
-                except Exception as e:
-                    self.logger.error(f"[frame] upload failed for {path}: {e}")
         finally:
             if own_connection and tv:
                 try:
@@ -378,21 +377,84 @@ class FrameController:
         for path in self.images_in(directory)[:limit]:
             cid = self._cached_content_id(path)
             (ready if cid else pending).append(cid or path)
+        self._touch(ready)
         return ready, pending
 
-    def _upload_one(self, art, path: str) -> Optional[str]:
+    # The Frame's art store is finite: at a little over 600 artworks every
+    # upload fails with error -1, and since nothing here ever deleted what it
+    # uploaded, every show not already on the TV stopped loading and the panel
+    # froze on the previous poster. So this keeps its own uploads under a cap,
+    # evicting the least recently shown. Only artwork recorded in
+    # frame_art_cache is ever deleted — the owner's own photos are not ours.
+
+    def _touch(self, content_ids: List[str]):
+        """Mark artworks as just used, so eviction takes the stalest first."""
+        if not content_ids:
+            return
+        import sqlite3
+        with sqlite3.connect(self.settings_manager.db_path) as conn:
+            conn.executemany(
+                "UPDATE frame_art_cache SET uploaded_at = CURRENT_TIMESTAMP WHERE content_id = ?",
+                [(c,) for c in content_ids])
+            conn.commit()
+
+    def _evict(self, art, count: int, keep=()) -> int:
+        """Delete up to `count` of our least recently used artworks, never
+        touching anything in `keep` (the show on screen). Returns how many."""
+        import sqlite3
+        keep = set(keep)
+        with sqlite3.connect(self.settings_manager.db_path) as conn:
+            rows = conn.execute(
+                "SELECT content_id FROM frame_art_cache ORDER BY uploaded_at ASC").fetchall()
+        victims = [r[0] for r in rows if r[0] not in keep][:count]
+        if not victims:
+            return 0
         try:
-            data = _offload(prepare_image, path)
-            cid = art.upload(data, file_type="JPEG", matte="none")
-            self._remember_upload(path, cid)
-            self.logger.info(f"[frame] uploaded {os.path.basename(path)} -> {cid}")
-            return cid
+            art.delete_list(victims)
         except Exception as e:
-            self.logger.error(f"[frame] upload failed for {os.path.basename(path)}: {e}")
-            # -10 and timeouts usually mean the TV went to sleep under us.
-            if "-10" in str(e) or "time" in str(e).lower():
-                self.ensure_awake()
-            return None
+            # Ids the TV no longer has make the whole batch fail; they are
+            # still worth forgetting, so fall through and drop the rows.
+            self.logger.warning(f"[frame] evict: delete_list failed ({e}); trying one by one")
+            for cid in victims:
+                try:
+                    art.delete(cid)
+                except Exception:
+                    pass
+        with sqlite3.connect(self.settings_manager.db_path) as conn:
+            conn.executemany("DELETE FROM frame_art_cache WHERE content_id = ?",
+                             [(c,) for c in victims])
+            conn.commit()
+        self.logger.info(f"[frame] evicted {len(victims)} old artworks to make room")
+        return len(victims)
+
+    def _make_room(self, art, keep=()):
+        import sqlite3
+        with sqlite3.connect(self.settings_manager.db_path) as conn:
+            have = conn.execute("SELECT COUNT(*) FROM frame_art_cache").fetchone()[0]
+        if have >= ART_CAPACITY:
+            self._evict(art, have - ART_CAPACITY + EVICT_BATCH, keep)
+
+    def _upload_one(self, art, path: str, keep=()) -> Optional[str]:
+        self._make_room(art, keep)
+        for attempt in (1, 2):
+            try:
+                data = _offload(prepare_image, path)
+                cid = art.upload(data, file_type="JPEG", matte="none")
+                self._remember_upload(path, cid)
+                self.logger.info(f"[frame] uploaded {os.path.basename(path)} -> {cid}")
+                return cid
+            except Exception as e:
+                self.logger.error(f"[frame] upload failed for {os.path.basename(path)}: {e}")
+                # -1: the art store is full (possibly with art we don't track).
+                # Free space and try once more rather than freezing the show.
+                if attempt == 1 and re.search(r"error number -1(?!\d)", str(e)):
+                    if self._evict(art, EVICT_BATCH, keep):
+                        continue
+                # -10 and timeouts usually mean the TV went to sleep under us.
+                if "-10" in str(e) or "time" in str(e).lower():
+                    self.ensure_awake()
+                return None
+        return None
 
     # -------------------------------------------------------------- playback
 
@@ -512,7 +574,7 @@ class FrameController:
                 # up front would leave the Frame blank for a minute.
                 content_ids, pending = self._split_cached(directory)
                 if not content_ids and pending:
-                    first = self._upload_one(art, pending.pop(0))
+                    first = self._upload_one(art, pending.pop(0), keep=content_ids)
                     if first:
                         content_ids.append(first)
 
@@ -544,7 +606,7 @@ class FrameController:
                     # connection: the TV accepts only one websocket client, so
                     # a second uploader connection kills them both.
                     if pending:
-                        got = self._upload_one(art, pending.pop(0))
+                        got = self._upload_one(art, pending.pop(0), keep=content_ids)
                         if got:
                             content_ids.append(got)
 

@@ -811,6 +811,10 @@ def play_show():
         return jsonify({'error': 'path is required'}), 400
 
     zone = req_zone_strict()
+    # Record what's loaded server-side, as loading a playlist does: the
+    # scheduler replays it and a reloaded page labels it from these.
+    settings_manager.save_zone_setting(zone, 'selected_directory', path)
+    set_loaded(zone, 'show')
     if zone == ZONE_KITCHEN:
         name = path.rstrip('/').split('/')[-1] or path
         items = [{'directory_path': path, 'directory_name': name,
@@ -823,6 +827,12 @@ def play_show():
         logger.info(f"Kitchen playing single show: {path}")
         return jsonify({'status': 'success'})
     try:
+        # Straight after the app starts nothing has discovered the screens
+        # yet, and the show would be refused with "No enabled Chromecast
+        # devices found". The scheduler guards against this the same way.
+        if not chromecast_manager.get_enabled_devices():
+            logger.info("[barn] no screens known yet, discovering before playing show")
+            run_discovery_sync()
         result = slideshow_controller.play_single_show(path)
         socketio.emit('playlist_stopped')
         socketio.emit('playlist_status_update', slideshow_controller.get_playlist_status())
