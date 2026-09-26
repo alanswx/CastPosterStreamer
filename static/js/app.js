@@ -841,10 +841,15 @@ class ChromecastSlideshowController {
 
         if (status && status.running && item) {
             playingRow = this.playlistListEl.querySelector(`[data-item-id="${item.id}"]`);
-            const mins = Math.floor(status.time_remaining / 60);
-            const secs = status.time_remaining % 60;
-            const clock = `${mins}:${String(secs).padStart(2, '0')} left`;
-            label = status.paused ? `paused · ${clock}` : clock;
+            // A single show has no end, so no countdown — only playlist shows.
+            if (typeof status.time_remaining === 'number' && item.id !== 'loaded-show') {
+                const mins = Math.floor(status.time_remaining / 60);
+                const secs = status.time_remaining % 60;
+                const clock = `${mins}:${String(secs).padStart(2, '0')} left`;
+                label = status.paused ? `paused · ${clock}` : clock;
+            } else if (status.paused) {
+                label = 'paused';
+            }
         } else if (this.showPlaying && this.selection.type === 'show') {
             // A single show is casting AND it's the show being listed. The
             // selection check matters: without it, a show left playing while a

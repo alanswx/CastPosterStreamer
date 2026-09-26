@@ -99,6 +99,15 @@ def send_wol(mac: str, broadcast: str = "255.255.255.255"):
             s.close()
 
 
+def _show_seconds(item: Dict[str, Any]) -> Optional[float]:
+    """How long a show runs, or None for a single loaded show, which plays
+    until it is replaced — as it does in the barn. It used to be a 60 minute
+    item that restarted itself every hour and counted down meanwhile."""
+    if item.get("id") == "loaded-show":
+        return None
+    return (item.get("duration_minutes") or 10) * 60
+
+
 def prepare_image(path: str) -> bytes:
     """Render a poster exactly the way the barn screens receive it.
 
@@ -557,8 +566,9 @@ class FrameController:
                 item = items[self.current_index % len(items)]
                 self.current_item = item
                 directory = item["directory_path"]
-                duration = (item.get("duration_minutes") or 10) * 60
-                self.logger.info(f"[frame] show: {item['directory_name']} for {duration/60:.0f} min")
+                duration = _show_seconds(item)
+                self.logger.info(f"[frame] show: {item['directory_name']} "
+                                 + (f"for {duration/60:.0f} min" if duration else "until replaced"))
 
                 # A sleeping Frame rejects every art request with error -10,
                 # so wake it before connecting rather than after failing.
@@ -608,7 +618,7 @@ class FrameController:
                 idx = 0
                 interval = self._interval()
 
-                while self._alive(generation) and (time.time() - started) < duration:
+                while self._alive(generation) and (duration is None or time.time() - started < duration):
                     if self.skip_requested:
                         break
                     if self.is_paused:
@@ -697,14 +707,15 @@ class FrameController:
             return {"running": False, "paused": False, "current_item": None,
                     "time_remaining": 0, "total_items": len(items),
                     "virtual_name": None}
-        duration = (item.get("duration_minutes") or 10) * 60
+        duration = _show_seconds(item)
         elapsed = time.time() - (self.current_item_start or time.time())
         return {
             "running": True,
             "paused": self.is_paused,
             "current_item": item,
             "current_index": self.current_index,
-            "time_remaining": int(max(0, duration - elapsed)),
+            # None for a single show: it has no end, so nothing to count down.
+            "time_remaining": None if duration is None else int(max(0, duration - elapsed)),
             "total_items": len(items),
             "virtual_name": self.virtual_name,
         }
