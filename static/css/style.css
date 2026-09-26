@@ -1709,3 +1709,15 @@ body {
         height: 64px;
     }
 }
+
+/* Phones: "Browse Playlists" must fit on one line in a half-width button */
+@media (max-width: 640px) {
+    .start-actions .start-btn,
+    .start-actions .start-btn:hover {
+        white-space: nowrap;
+        gap: 0.35rem;
+        padding: 0.75rem 0.35rem;
+        font-size: 0.95rem;
+    }
+    .start-btn svg { width: 21px; height: 21px; }
+}
