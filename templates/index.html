@@ -49,9 +49,17 @@
                             <button id="load-playlist" class="btn btn-secondary btn-sm">Load Playlist ▾</button>
                             <div id="load-playlist-dropdown" class="playlist-dropdown" style="display:none"></div>
                         </div>
-                        <button id="add-show" class="btn btn-secondary btn-sm">Add Show</button>
-                        <button id="save-playlist" class="btn btn-secondary btn-sm">Save Playlist</button>
                     </div>
+                </div>
+
+                <!-- Playlist editing tools, hidden until "Edit playlist" is
+                     chosen from the Load Playlist menu: they're rarely needed
+                     and cost a whole row on a phone. -->
+                <div id="playlist-edit-bar" class="playlist-edit-bar" style="display:none">
+                    <span class="playlist-edit-label">Editing playlist</span>
+                    <button id="add-show" class="btn btn-secondary btn-sm">+ Add Show</button>
+                    <button id="save-playlist" class="btn btn-secondary btn-sm">Save Playlist</button>
+                    <button id="playlist-edit-done" class="btn btn-primary btn-sm">Done</button>
                 </div>
 
                 <!-- Collapsible show picker -->

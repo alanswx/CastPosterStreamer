@@ -44,6 +44,8 @@ class ChromecastSlideshowController {
         this.playlistLabelEl = document.getElementById('playlist-label');
         this.loadShowBtn = document.getElementById('load-show');
         this.addShowBtn = document.getElementById('add-show');
+        this.editBarEl = document.getElementById('playlist-edit-bar');
+        this.editDoneBtn = document.getElementById('playlist-edit-done');
         this.showPickerEl = document.getElementById('show-picker');
         this.pickerTitleEl = document.getElementById('picker-title');
         this.pickerCloseBtn = document.getElementById('picker-close');
@@ -124,6 +126,7 @@ class ChromecastSlideshowController {
 
         // Playlist events
         this.savePlaylistBtn.addEventListener('click', () => this.savePlaylist());
+        this.editDoneBtn.addEventListener('click', () => this.setEditing(false));
         this.loadPlaylistBtn.addEventListener('click', (e) => { e.stopPropagation(); this.toggleLoadDropdown(); });
         this.savePlaylistConfirmBtn.addEventListener('click', () => this.confirmSavePlaylist());
         this.savePlaylistCancelBtn.addEventListener('click', () => this.hideSaveModal());
@@ -414,6 +417,7 @@ class ChromecastSlideshowController {
         [...this.zoneToggleEl.querySelectorAll('.zone-btn')].forEach(b =>
             b.classList.toggle('is-active', b.dataset.zone === zone));
         this.closePicker();
+        this.setEditing(false);
         this.allShowsQueue = null;
         this.selection = { type: 'playlist', name: null, path: null };
         this.logMessage(`Switched to ${zone}`, 'info');
@@ -1541,6 +1545,12 @@ class ChromecastSlideshowController {
         this.loadPlaylistDropdown.style.display = 'none';
     }
 
+    /** Show or hide the playlist editing bar (Add Show / Save Playlist). */
+    setEditing(on) {
+        this.editBarEl.style.display = on ? '' : 'none';
+        if (!on && this.pickerMode === 'add') this.closePicker();
+    }
+
     async showLoadDropdown() {
         try {
             const response = await this.api('/api/saved-playlists');
@@ -1588,8 +1598,20 @@ class ChromecastSlideshowController {
                 e.stopPropagation();
                 this.hideLoadDropdown();
                 this.createPlaylist();
+                this.setEditing(true);
             });
             this.loadPlaylistDropdown.appendChild(createItem);
+
+            // Editing tools live behind this, not on the main screen.
+            const editItem = document.createElement('div');
+            editItem.className = 'playlist-dropdown-item playlist-dropdown-edit';
+            editItem.innerHTML = '<span class="playlist-dropdown-item-name">✎ Edit playlist</span>';
+            editItem.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.hideLoadDropdown();
+                this.setEditing(true);
+            });
+            this.loadPlaylistDropdown.appendChild(editItem);
 
             this.loadPlaylistDropdown.style.display = 'block';
         } catch (error) {

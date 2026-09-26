@@ -1421,3 +1421,33 @@ header h1 {
 
 .recent-item.recent-missing:hover { background: white; }
 .recent-item.recent-missing .recent-item-play { display: none; }
+
+/* Playlist editing bar: hidden until "Edit playlist" is chosen */
+.playlist-edit-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    margin: 0.5rem 0 0.75rem;
+    padding: 0.5rem 0.6rem;
+    background: #fdf6e3;
+    border: 1px solid #f0e0b0;
+    border-radius: 6px;
+}
+
+.playlist-edit-label {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #8a6d1f;
+    margin-right: auto;
+}
+
+.playlist-dropdown-edit {
+    color: #8a6d1f;
+    font-weight: 500;
+}
+
+@media (max-width: 640px) {
+    .playlist-edit-label { flex-basis: 100%; }
+    .playlist-edit-bar .btn { flex: 1; margin: 0; }
+}
