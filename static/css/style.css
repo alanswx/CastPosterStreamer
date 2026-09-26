@@ -1480,10 +1480,6 @@ header h1 {
 
 .playlist-item-time:empty { display: none; }
 
-.playlist-header h2 #playlist-name {
-    font-size: 1.3rem;
-}
-
 .playlist-dropdown-item-name {
     font-size: 1.05rem;
 }
@@ -1491,7 +1487,6 @@ header h1 {
 @media (max-width: 640px) {
     .playlist-item-name { font-size: 1.05rem; }
     .playlist-item-time { font-size: 0.82rem; margin-left: 0.5rem; }
-    .playlist-header h2 #playlist-name { font-size: 1.2rem; }
 }
 
 /* Larger thumbnails in both lists, and a bigger play arrow in Recently
@@ -1502,9 +1497,10 @@ header h1 {
 }
 
 .recent-item-play {
-    font-size: 1.7rem;
-    line-height: 1;
-    padding: 0 0.25rem;
+    width: 34px;
+    height: 34px;
+    flex: 0 0 auto;
+    fill: currentColor;
 }
 
 @media (max-width: 640px) {
@@ -1513,5 +1509,11 @@ header h1 {
         width: 52px;
         height: 52px;
     }
-    .recent-item-play { font-size: 1.6rem; }
+    .recent-item-play { width: 32px; height: 32px; }
+}
+
+/* Load Show / Load Playlist: a little larger than other small buttons */
+.playlist-actions .btn {
+    font-size: 0.95rem;
+    padding: 0.3rem 0.7rem;
 }

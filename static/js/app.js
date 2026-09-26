@@ -1357,7 +1357,7 @@ class ChromecastSlideshowController {
                     <div class="playlist-item-name"></div>
                     ${show.available ? '' : '<div class="recent-item-when">Folder missing</div>'}
                 </div>
-                <span class="recent-item-play" aria-hidden="true">▶</span>`;
+                <svg class="recent-item-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>`;
             // textContent, not innerHTML: folder names are user data.
             row.querySelector('.playlist-item-name').textContent = show.directory_name;
             if (show.available) {
