@@ -1267,7 +1267,7 @@ class ChromecastSlideshowController {
         const div = document.createElement('div');
         const broken = !item.is_valid;
         div.className = `playlist-item ${broken ? 'invalid item-broken' : ''}`;
-        div.draggable = true;
+        div.draggable = !!this.editing;
         div.dataset.itemId = item.id;
 
         const durationOptions = [1, 2, 5, 10, 15, 20, 30, 45, 60]
@@ -1547,7 +1547,14 @@ class ChromecastSlideshowController {
 
     /** Show or hide the playlist editing bar (Add Show / Save Playlist). */
     setEditing(on) {
+        this.editing = !!on;
         this.editBarEl.style.display = on ? '' : 'none';
+        // Durations, delete buttons and drag-to-reorder belong to editing
+        // too; outside it the rows are just the list of what's on.
+        this.playlistListEl.classList.toggle('editing', this.editing);
+        this.playlistListEl.querySelectorAll('.playlist-item').forEach(el => {
+            el.draggable = this.editing && !this.isVirtualPlaylist;
+        });
         if (!on && this.pickerMode === 'add') this.closePicker();
     }
 

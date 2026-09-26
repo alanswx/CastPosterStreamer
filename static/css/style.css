@@ -1451,3 +1451,14 @@ header h1 {
     .playlist-edit-label { flex-basis: 100%; }
     .playlist-edit-bar .btn { flex: 1; margin: 0; }
 }
+
+/* Row controls only while editing the playlist */
+.playlist-list:not(.editing) .playlist-item-duration,
+.playlist-list:not(.editing) .playlist-item-actions,
+.playlist-list:not(.editing) .playlist-item-drag-handle {
+    display: none;
+}
+
+.playlist-list:not(.editing) .playlist-item {
+    cursor: default;
+}
