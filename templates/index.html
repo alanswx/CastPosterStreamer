@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>Virtual Poster Display</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v=asset_version) }}">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
@@ -18,42 +18,35 @@
         </header>
 
         <main>
-            <!-- Player controls: no panel chrome, just centred under the title -->
-            <!-- Inline SVG rather than unicode glyphs: ⏸ ⏭ ⏹ default to emoji
-                 presentation, which iOS renders in fixed colours and ignores
-                 CSS `color` on. SVG with currentColor behaves everywhere. -->
-            <div class="player-buttons">
-                <button id="start-playlist" class="icon-btn icon-play" title="Play">
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
-                </button>
-                <button id="pause-slideshow" class="icon-btn icon-pause" title="Pause" disabled>
-                    <svg class="ic-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>
-                    <svg class="ic-resume" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
-                </button>
-                <button id="skip-slideshow" class="icon-btn icon-skip" title="Skip" disabled>
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14l9-7zm11 0h3v14h-3z"/></svg>
-                </button>
-                <button id="stop-slideshow" class="icon-btn icon-stop" title="Stop" disabled>
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6h12v12H6z"/></svg>
-                </button>
-                <input type="checkbox" id="rotation-enabled" checked style="display:none">
+            <!-- The two things you do most, at the top. Starting replaces
+                 whatever is playing. The picker opens right beneath. -->
+            <div class="start-actions playlist-actions">
+                <button id="load-show" class="btn btn-secondary">Start Show</button>
+                <div class="load-playlist-wrapper">
+                    <button id="load-playlist" class="btn btn-secondary">Start Playlist ▾</button>
+                    <div id="load-playlist-dropdown" class="playlist-dropdown" style="display:none"></div>
+                </div>
             </div>
 
-            <!-- Now Playing / Up Next Section (picker lives inside) -->
+            <!-- Collapsible show picker -->
+            <div id="show-picker" class="show-picker" style="display:none">
+                <div class="picker-header">
+                    <span id="picker-title" class="picker-title">Choose a show</span>
+                    <button id="picker-close" class="btn btn-secondary btn-sm" title="Close picker">✕</button>
+                </div>
+                <div class="directory-list" id="directory-list"></div>
+                <span id="current-path" style="display:none"></span>
+                <span id="directory-thumbnails" style="display:none"></span>
+            </div>
+
+            <!-- Now Playing -->
             <section class="panel">
                 <div class="playlist-header">
                     <h2><span id="playlist-label">Now Playing:</span> <span id="playlist-name">New Playlist</span><span id="playlist-dirty" class="dirty-indicator" style="display:none"> *</span></h2>
-                    <div class="playlist-actions">
-                        <button id="load-show" class="btn btn-secondary btn-sm">Load Show</button>
-                        <div class="load-playlist-wrapper">
-                            <button id="load-playlist" class="btn btn-secondary btn-sm">Load Playlist ▾</button>
-                            <div id="load-playlist-dropdown" class="playlist-dropdown" style="display:none"></div>
-                        </div>
-                    </div>
                 </div>
 
                 <!-- Playlist editing tools, hidden until "Edit playlist" is
-                     chosen from the Load Playlist menu: they're rarely needed
+                     chosen from the Start Playlist menu: they're rarely needed
                      and cost a whole row on a phone. -->
                 <div id="playlist-edit-bar" class="playlist-edit-bar" style="display:none">
                     <span class="playlist-edit-label">Editing playlist</span>
@@ -62,20 +55,9 @@
                     <button id="playlist-edit-done" class="btn btn-primary btn-sm">Done</button>
                 </div>
 
-                <!-- Collapsible show picker -->
-                <div id="show-picker" class="show-picker" style="display:none">
-                    <div class="picker-header">
-                        <span id="picker-title" class="picker-title">Choose a show</span>
-                        <button id="picker-close" class="btn btn-secondary btn-sm" title="Close picker">✕</button>
-                    </div>
-                    <div class="directory-list" id="directory-list"></div>
-                    <span id="current-path" style="display:none"></span>
-                    <span id="directory-thumbnails" style="display:none"></span>
-                </div>
-
                 <div class="playlist-container">
                     <div class="playlist-list" id="playlist-list">
-                        <div class="no-playlist-items">Nothing loaded. Use "Load Show" or "Load Playlist" above.</div>
+                        <div class="no-playlist-items">Nothing playing. Use "Start Show" or "Start Playlist" above.</div>
                     </div>
                 </div>
             </section>
@@ -178,6 +160,29 @@
             </section>
         </main>
     </div>
+
+    <!-- Transport, in a bar fixed to the bottom of the screen.
+         Inline SVG rather than unicode glyphs: ⏸ ⏭ ⏹ default to emoji
+         presentation, which iOS renders in fixed colours and ignores CSS
+         `color` on. SVG with currentColor behaves everywhere. -->
+    <nav class="player-bar" aria-label="Playback">
+        <div class="player-buttons">
+            <button id="start-playlist" class="icon-btn icon-play" title="Play">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+            </button>
+            <button id="pause-slideshow" class="icon-btn icon-pause" title="Pause" disabled>
+                <svg class="ic-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>
+                <svg class="ic-resume" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+            </button>
+            <button id="skip-slideshow" class="icon-btn icon-skip" title="Skip" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14l9-7zm11 0h3v14h-3z"/></svg>
+            </button>
+            <button id="stop-slideshow" class="icon-btn icon-stop" title="Stop" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6h12v12H6z"/></svg>
+            </button>
+            <input type="checkbox" id="rotation-enabled" checked style="display:none">
+        </div>
+    </nav>
 
     <script src="{{ url_for('static', filename='js/app.js', v=asset_version) }}"></script>
 </body>

@@ -764,7 +764,7 @@ class ChromecastSlideshowController {
     /** Open the picker at the library folder. mode: 'load' | 'add'. */
     async openPicker(mode) {
         this.pickerMode = mode;
-        this.pickerTitleEl.textContent = mode === 'load' ? 'Load a show' : 'Add a show to the playlist';
+        this.pickerTitleEl.textContent = mode === 'load' ? 'Start a show' : 'Add a show to the playlist';
         this.showPickerEl.style.display = '';
         // No path argument: the server opens the configured library folder.
         await this.browseDirectory(null);
