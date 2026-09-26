@@ -1721,3 +1721,6 @@ body {
     }
     .start-btn svg { width: 21px; height: 21px; }
 }
+
+/* The picker closes by tapping outside it (or Browse Shows again). */
+#picker-close { display: none; }

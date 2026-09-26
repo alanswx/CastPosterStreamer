@@ -116,7 +116,11 @@ class ChromecastSlideshowController {
         this.stopSlideshowBtn.addEventListener('click', () => this.stopSlideshow());
 
         // Picker / playlist events
-        this.loadShowBtn.addEventListener('click', () => this.openPicker('load'));
+        // Browse Shows toggles: a second tap closes the picker again.
+        this.loadShowBtn.addEventListener('click', () => {
+            if (this.pickerMode === 'load') this.closePicker();
+            else this.openPicker('load');
+        });
         this.addShowBtn.addEventListener('click', () => this.openPicker('add'));
         this.pickerCloseBtn.addEventListener('click', () => this.closePicker());
 
@@ -127,12 +131,23 @@ class ChromecastSlideshowController {
         // Playlist events
         this.savePlaylistBtn.addEventListener('click', () => this.savePlaylist());
         this.editDoneBtn.addEventListener('click', () => this.setEditing(false));
-        this.loadPlaylistBtn.addEventListener('click', (e) => { e.stopPropagation(); this.toggleLoadDropdown(); });
+        // This stops the click reaching the outside-click handler below, so
+        // close the show picker here: only one of the two is open at a time.
+        this.loadPlaylistBtn.addEventListener('click', (e) => { e.stopPropagation(); this.closePicker(); this.toggleLoadDropdown(); });
         this.savePlaylistConfirmBtn.addEventListener('click', () => this.confirmSavePlaylist());
         this.savePlaylistCancelBtn.addEventListener('click', () => this.hideSaveModal());
         this.savePlaylistNameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') this.confirmSavePlaylist(); if (e.key === 'Escape') this.hideSaveModal(); });
         // Close dropdown when clicking outside
-        document.addEventListener('click', () => this.hideLoadDropdown());
+        // A click anywhere outside closes the playlist menu and the show
+        // picker. composedPath() is taken as dispatched, so a click that
+        // re-renders the picker's own folder list still counts as inside it.
+        document.addEventListener('click', (e) => {
+            this.hideLoadDropdown();
+            if (this.showPickerEl.style.display === 'none') return;
+            const path = e.composedPath();
+            if ([this.showPickerEl, this.loadShowBtn, this.addShowBtn].some(el => path.includes(el))) return;
+            this.closePicker();
+        });
 
         // Screen schedule
         this.scheduleEnabledEl.addEventListener('change', () => this.saveSchedule());
@@ -764,7 +779,10 @@ class ChromecastSlideshowController {
     /** Open the picker at the library folder. mode: 'load' | 'add'. */
     async openPicker(mode) {
         this.pickerMode = mode;
-        this.pickerTitleEl.textContent = mode === 'load' ? 'Start a show' : 'Add a show to the playlist';
+        // Browsing to play needs no caption; adding does, since picking a
+        // show then adds it to the playlist instead of playing it.
+        this.pickerTitleEl.textContent = 'Add a show to the playlist';
+        this.pickerTitleEl.parentElement.style.display = mode === 'add' ? '' : 'none';
         this.showPickerEl.style.display = '';
         // No path argument: the server opens the configured library folder.
         await this.browseDirectory(null);
