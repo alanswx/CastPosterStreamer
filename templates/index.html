@@ -21,9 +21,16 @@
             <!-- The two things you do most, at the top. Starting replaces
                  whatever is playing. The picker opens right beneath. -->
             <div class="start-actions playlist-actions">
-                <button id="load-show" class="btn btn-secondary">Start Show</button>
+                <button id="load-show" class="btn start-btn">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm0 2v10.6l3.5-3.5 2.5 2.5 4-4 4 4V5H5zm4 1.5A1.5 1.5 0 1 1 9 9.5a1.5 1.5 0 0 1 0-3z"/></svg>
+                    <span>Start Show</span>
+                </button>
                 <div class="load-playlist-wrapper">
-                    <button id="load-playlist" class="btn btn-secondary">Start Playlist ▾</button>
+                    <button id="load-playlist" class="btn start-btn">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h12v2H3zm0 4h12v2H3zm0 4h8v2H3zm13 0v6l5-3z"/></svg>
+                        <span>Start Playlist</span>
+                        <svg class="start-btn-caret" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5z"/></svg>
+                    </button>
                     <div id="load-playlist-dropdown" class="playlist-dropdown" style="display:none"></div>
                 </div>
             </div>
@@ -40,7 +47,7 @@
             </div>
 
             <!-- Now Playing -->
-            <section class="panel">
+            <section class="panel now-panel">
                 <div class="playlist-header">
                     <h2><span id="playlist-label">Now Playing:</span> <span id="playlist-name">New Playlist</span><span id="playlist-dirty" class="dirty-indicator" style="display:none"> *</span></h2>
                 </div>
@@ -64,7 +71,7 @@
 
             <!-- Recently Played: shows this zone has put on screen, newest
                  first. Tapping one plays it again. -->
-            <section class="panel">
+            <section class="panel recent-panel">
                 <h2>Recently Played</h2>
                 <div class="recent-list" id="recent-list">
                     <div class="no-playlist-items">Nothing played yet.</div>
