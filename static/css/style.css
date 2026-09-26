@@ -1668,12 +1668,12 @@ body {
     height: 24px;
 }
 
-/* Rounded green box around the playing show, inset from the list edge so
-   its corners read as rounded rather than clipped by the list's border. */
+/* Rounded green box around the playing show. No margin: the Now Playing
+   list has no frame to clip its corners, and a margin left the panel with
+   more space below its list than Recently Played has. */
 .playlist-container .playlist-list .playlist-item.currently-playing,
 .playlist-item.currently-playing {
     border-radius: 10px;
-    margin: 4px;
 }
 
 /* Without this the rounded green row sat inside the list's grey frame:
@@ -1682,3 +1682,16 @@ body {
     border: none;
     border-radius: 0;
 }
+
+/* Recently Played's list has a 1px frame; match its gap exactly. */
+.now-panel .playlist-list { padding-bottom: 1px; }
+
+/* Start buttons: heavier outline */
+.start-actions .start-btn,
+.start-actions .start-btn:hover {
+    border-width: 3px;
+}
+
+/* No row numbers: the order is plain from the list itself */
+.playlist-item-number,
+.playlist-item.currently-playing .playlist-item-number { display: none; }
