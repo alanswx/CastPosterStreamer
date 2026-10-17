@@ -363,7 +363,9 @@ def browse_directories():
             inside_library = False
         if inside_library:
             items.append({'name': '..', 'path': str(directory_path.parent), 'type': 'directory'})
-        for item in sorted(directory_path.iterdir()):
+        # Case-insensitive: a plain sort puts every capitalised name before
+        # every lowercase one ("Travel" ahead of "album art selected").
+        for item in sorted(directory_path.iterdir(), key=lambda p: p.name.casefold()):
             if item.is_dir() and not item.name.startswith('.'):
                 items.append({'name': item.name, 'path': str(item), 'type': 'directory'})
         return items
