@@ -13,7 +13,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 W, H = 1080, 1920
-M = 70                       # side margin
+M = 56                       # side margin
 BG, FG, MUTED, RED, RULE = (16, 16, 18), (242, 242, 240), (150, 154, 160), (214, 32, 39), (60, 60, 64)
 
 GEORGIA = "/System/Library/Fonts/Supplemental/Georgia.ttf"
@@ -84,15 +84,15 @@ def render(posts, out_path):
     y = 245
     if posts:
         p = posts[0]
-        d.text((M, y), meta(p), font=font(HELV, 38), fill=MUTED)
-        y += 70
+        d.text((M, y), meta(p), font=font(HELV, 44), fill=MUTED)
+        y += 78
         if p.get("headline"):
-            y, _ = draw_block(d, y, wrap(d, p["headline"], font(GEORGIA_B, 70), width),
-                              font(GEORGIA_B, 70), FG, 1.16, 1380)
+            y, _ = draw_block(d, y, wrap(d, p["headline"], font(GEORGIA_B, 80), width),
+                              font(GEORGIA_B, 80), FG, 1.14, 1420)
             y += 20
-        body_f = font(GEORGIA, 56)
+        body_f = font(GEORGIA, 68)
         for para in p.get("paragraphs", []):
-            y, cut = draw_block(d, y, wrap(d, para, body_f, width), body_f, FG, 1.34, 1440)
+            y, cut = draw_block(d, y, wrap(d, para, body_f, width), body_f, FG, 1.3, 1500)
             if cut:
                 break
             y += 22
@@ -102,20 +102,20 @@ def render(posts, out_path):
     y = y + 40
     d.line((M, y, W - M, y), fill=RULE, width=2)
     y += 30
-    d.text((M, y), "EARLIER", font=font(HELV, 28, 1), fill=MUTED)
-    y += 55
-    small_meta, small_body = font(HELV, 32), font(GEORGIA, 42)
+    d.text((M, y), "EARLIER", font=font(HELV, 32, 1), fill=MUTED)
+    y += 60
+    small_meta, small_body = font(HELV, 38), font(GEORGIA, 52)
     for p in posts[1:]:
-        if y + 48 + 2 * int(small_body.size * 1.3) > 1840:
+        if y + 56 + 2 * int(small_body.size * 1.28) > 1850:
             break
         d.text((M, y), meta(p), font=small_meta, fill=MUTED)
-        y += 48
+        y += 56
         text = p.get("headline") or (p.get("paragraphs") or [""])[0]
         lines = wrap(d, text, small_body, width)
         if len(lines) > 2:
             lines = lines[:2]
             lines[1] = lines[1].rstrip(",;:") + " …"
-        y, _ = draw_block(d, y, lines, small_body, (210, 210, 208), 1.3, 1840)
+        y, _ = draw_block(d, y, lines, small_body, (210, 210, 208), 1.28, 1850)
         y += 26
 
     stamp = datetime.now().strftime("%-I:%M %p").lower()

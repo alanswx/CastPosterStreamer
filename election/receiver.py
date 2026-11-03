@@ -8,6 +8,7 @@ and serves rendered slides to the Chromecasts.
   GET  /<file>.jpg rendered slides from out/
 """
 import hashlib
+import importlib
 import json
 import os
 import subprocess
@@ -47,6 +48,7 @@ def update_screen(posts, force=False):
             return
         _state["sig"], _state["sent_at"] = sig, time.time()
     try:
+        importlib.reload(render)   # pick up layout edits without a restart
         render.render(posts, os.path.join(OUT, "nyt.jpg"))
         cast(SCREEN, "nyt.jpg")
     except Exception as e:
