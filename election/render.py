@@ -68,55 +68,53 @@ def draw_block(d, y, lines, f, fill, leading, max_y):
     return y, False
 
 
-def render(posts, out_path):
+def fit_body(d, p, width, top, bottom):
+    """Largest headline/body size at which the whole post fits the screen."""
+    for size in range(84, 50, -4):
+        head_f, body_f = font(GEORGIA_B, size + 10), font(GEORGIA, size)
+        h = 0
+        if p.get("headline"):
+            h += len(wrap(d, p["headline"], head_f, width)) * int(head_f.size * 1.14) + 24
+        for para in p.get("paragraphs", []):
+            h += len(wrap(d, para, body_f, width)) * int(body_f.size * 1.3) + 26
+        if top + h <= bottom:
+            break
+    return head_f, body_f
+
+
+def render(post, out_path, latest=True):
+    """One post per screen: the newest on Barn One, the ones before it on the others."""
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img)
     width = W - 2 * M
+    bottom = H - 90
 
-    # Header: LIVE pill + title
+    # Header: LIVE pill on the newest post, a quieter EARLIER pill on the rest
     pill_f = font(HELV, 34, 1)
-    d.rounded_rectangle((M, 70, M + 120, 122), radius=10, fill=RED)
-    d.text((M + 60, 96), "LIVE", font=pill_f, fill=(255, 255, 255), anchor="mm")
-    d.text((M + 145, 96), "Election Night", font=font(HELV, 46, 1), fill=FG, anchor="lm")
+    label, pill_w = ("LIVE", 120) if latest else ("EARLIER", 190)
+    d.rounded_rectangle((M, 70, M + pill_w, 122), radius=10, fill=RED if latest else RULE)
+    d.text((M + pill_w // 2, 96), label, font=pill_f, fill=(255, 255, 255), anchor="mm")
+    d.text((M + pill_w + 25, 96), "Election Night", font=font(HELV, 46, 1), fill=FG, anchor="lm")
     d.text((M, 150), "New York Times live updates", font=font(HELV, 30), fill=MUTED)
     d.line((M, 205, W - M, 205), fill=RULE, width=2)
 
     y = 245
-    if posts:
-        p = posts[0]
-        d.text((M, y), meta(p), font=font(HELV, 44), fill=MUTED)
-        y += 78
-        if p.get("headline"):
-            y, _ = draw_block(d, y, wrap(d, p["headline"], font(GEORGIA_B, 80), width),
-                              font(GEORGIA_B, 80), FG, 1.14, 1420)
-            y += 20
-        body_f = font(GEORGIA, 68)
-        for para in p.get("paragraphs", []):
-            y, cut = draw_block(d, y, wrap(d, para, body_f, width), body_f, FG, 1.3, 1500)
+    if post:
+        meta_f = font(HELV, 44)
+        line = meta(post)
+        while d.textlength(line, font=meta_f) > width:   # long bylines: trim to fit
+            line = line[:-2].rstrip(" ,·") + "…"
+        d.text((M, y), line, font=meta_f, fill=MUTED)
+        y += 84
+        head_f, body_f = fit_body(d, post, width, y, bottom)
+        if post.get("headline"):
+            y, _ = draw_block(d, y, wrap(d, post["headline"], head_f, width), head_f, FG, 1.14, bottom)
+            y += 24
+        for para in post.get("paragraphs", []):
+            y, cut = draw_block(d, y, wrap(d, para, body_f, width), body_f, FG, 1.3, bottom)
             if cut:
                 break
-            y += 22
-
-    # Earlier posts start right after the main one, so a short post leaves
-    # no dead space; as many fit as there is room for.
-    y = y + 40
-    d.line((M, y, W - M, y), fill=RULE, width=2)
-    y += 30
-    d.text((M, y), "EARLIER", font=font(HELV, 32, 1), fill=MUTED)
-    y += 60
-    small_meta, small_body = font(HELV, 38), font(GEORGIA, 52)
-    for p in posts[1:]:
-        if y + 56 + 2 * int(small_body.size * 1.28) > 1850:
-            break
-        d.text((M, y), meta(p), font=small_meta, fill=MUTED)
-        y += 56
-        text = p.get("headline") or (p.get("paragraphs") or [""])[0]
-        lines = wrap(d, text, small_body, width)
-        if len(lines) > 2:
-            lines = lines[:2]
-            lines[1] = lines[1].rstrip(",;:") + " …"
-        y, _ = draw_block(d, y, lines, small_body, (210, 210, 208), 1.28, 1850)
-        y += 26
+            y += 26
 
     stamp = datetime.now().strftime("%-I:%M %p").lower()
     d.text((W - M, H - 50), f"updated {stamp}", font=font(HELV, 26), fill=MUTED, anchor="rs")
@@ -129,6 +127,7 @@ if __name__ == "__main__":
     with open(src) as f:
         posts = json.load(f)["posts"]
     os.makedirs(os.path.join(HERE, "out"), exist_ok=True)
-    out = os.path.join(HERE, "out", "nyt.jpg")
-    render(posts, out)
-    print(out)
+    for i, p in enumerate(posts[:4]):
+        out = os.path.join(HERE, "out", f"nyt{i + 1}.jpg")
+        render(p, out, latest=(i == 0))
+        print(out)

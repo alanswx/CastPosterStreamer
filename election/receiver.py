@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import render
@@ -24,11 +25,22 @@ REPO = os.path.dirname(HERE)
 OUT = os.path.join(HERE, "out")
 PORT = 5055
 HOST_IP = sys.argv[1] if len(sys.argv) > 1 else "192.168.4.41"
-SCREEN = 'Barn One 32" QLED'
+# Newest post on Barn One, the ones before it on Two, Three and Four.
+SCREENS = ['Barn One 32" QLED', 'Barn Two 32" QLED', 'Barn Three 32" QLED', 'Barn Four 32" QLED']
 REFRESH_SECONDS = 600        # re-send even if nothing changed
+# The party ends at 23:00. The barn's power schedule is set to turn the
+# screens off then, so stop casting just before (a cast would wake them),
+# and afterwards put the schedule back to its everyday off time and exit.
+STOP_CASTING_AT = "22:59"
+RESTORE_AT = "23:05"
+EVERYDAY_SCHEDULE = {"zone": "barn", "enabled": True, "on_time": "09:00", "off_time": "18:00"}
 
-_state = {"sig": None, "sent_at": 0.0}
+_state = {s: {"sig": None, "sent_at": 0.0} for s in SCREENS}
 _lock = threading.Lock()
+
+
+def now_hhmm():
+    return time.strftime("%H:%M")
 
 
 def cast(screen, filename):
@@ -39,20 +51,45 @@ def cast(screen, filename):
     print(time.strftime("%H:%M:%S"), screen, (r.stdout.strip().splitlines() or ["?"])[-1], flush=True)
 
 
-def update_screen(posts, force=False):
-    """Redraw and send the slide if the posts changed (or it's due anyway)."""
-    sig = hashlib.sha1(json.dumps(posts[:6], sort_keys=True).encode()).hexdigest()
+def update_screen(i, post):
+    """Redraw and send one screen's slide if its post changed (or it's due anyway)."""
+    screen = SCREENS[i]
+    sig = hashlib.sha1(json.dumps(post, sort_keys=True).encode()).hexdigest()
     with _lock:
-        due = time.time() - _state["sent_at"] > REFRESH_SECONDS
-        if sig == _state["sig"] and not (force or due):
+        st = _state[screen]
+        due = time.time() - st["sent_at"] > REFRESH_SECONDS
+        if sig == st["sig"] and not due:
             return
-        _state["sig"], _state["sent_at"] = sig, time.time()
+        st["sig"], st["sent_at"] = sig, time.time()
     try:
-        importlib.reload(render)   # pick up layout edits without a restart
-        render.render(posts, os.path.join(OUT, "nyt.jpg"))
-        cast(SCREEN, "nyt.jpg")
+        name = f"nyt{i + 1}.jpg"
+        render.render(post, os.path.join(OUT, name), latest=(i == 0))
+        cast(screen, name)
     except Exception as e:
-        print("update failed:", e, flush=True)
+        print(screen, "update failed:", e, flush=True)
+
+
+def update_screens(posts):
+    if now_hhmm() >= STOP_CASTING_AT:
+        return
+    importlib.reload(render)   # pick up layout edits without a restart
+    # Video/graphic-only posts have no text to show; skip them.
+    posts = [p for p in posts if p.get("headline") or p.get("paragraphs")]
+    for i, post in enumerate(posts[:len(SCREENS)]):
+        threading.Thread(target=update_screen, args=(i, post), daemon=True).start()
+
+
+def end_of_night():
+    while now_hhmm() < RESTORE_AT:
+        time.sleep(30)
+    req = urllib.request.Request("http://localhost:5001/api/schedule",
+                                 data=json.dumps(EVERYDAY_SCHEDULE).encode(),
+                                 headers={"Content-Type": "application/json"})
+    try:
+        print("schedule restored:", urllib.request.urlopen(req, timeout=30).read().decode(), flush=True)
+    except Exception as e:
+        print("schedule restore FAILED:", e, flush=True)
+    os._exit(0)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -77,7 +114,7 @@ class Handler(BaseHTTPRequestHandler):
         data = json.loads(body)
         with open(os.path.join(HERE, "posts.json"), "w") as f:
             json.dump(data, f, indent=1)
-        threading.Thread(target=update_screen, args=(data.get("posts", []),), daemon=True).start()
+        threading.Thread(target=update_screens, args=(data.get("posts", []),), daemon=True).start()
         self.send_response(200)
         self._cors()
         self.send_header("Content-Type", "application/json")
@@ -106,4 +143,5 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
     print(f"receiver on :{PORT}", flush=True)
+    threading.Thread(target=end_of_night, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
