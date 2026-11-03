@@ -46,9 +46,7 @@ def local_time(iso):
 
 
 def meta(p):
-    who = p.get("author", "")
-    where = p.get("tagline", "")
-    bits = [local_time(p["time"])] + [b for b in (who, where) if b]
+    bits = [local_time(p["time"])] + ([p["author"]] if p.get("author") else [])
     return "  ·  ".join(bits)
 
 
@@ -66,20 +64,6 @@ def draw_block(d, y, lines, f, fill, leading, max_y):
         if last_fits and i < len(lines) - 1:
             return y, True
     return y, False
-
-
-def fit_body(d, p, width, top, bottom):
-    """Largest headline/body size at which the whole post fits the screen."""
-    for size in range(84, 50, -4):
-        head_f, body_f = font(GEORGIA_B, size + 10), font(GEORGIA, size)
-        h = 0
-        if p.get("headline"):
-            h += len(wrap(d, p["headline"], head_f, width)) * int(head_f.size * 1.14) + 24
-        for para in p.get("paragraphs", []):
-            h += len(wrap(d, para, body_f, width)) * int(body_f.size * 1.3) + 26
-        if top + h <= bottom:
-            break
-    return head_f, body_f
 
 
 def render(post, out_path, latest=True):
@@ -107,7 +91,9 @@ def render(post, out_path, latest=True):
             line = line[:-2].rstrip(" ,·") + "…"
         d.text((M, y), line, font=meta_f, fill=MUTED)
         y += 84
-        head_f, body_f = fit_body(d, post, width, y, bottom)
+        # One text size on every screen; a long post is cut off with "…"
+        # rather than shrunk, so the four screens match.
+        head_f, body_f = font(GEORGIA_B, 78), font(GEORGIA, 68)
         if post.get("headline"):
             y, _ = draw_block(d, y, wrap(d, post["headline"], head_f, width), head_f, FG, 1.14, bottom)
             y += 24
