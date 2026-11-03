@@ -91,14 +91,15 @@ def render(post, out_path, latest=True):
 
     # Header: LIVE pill on the newest post, a quieter EARLIER pill on the rest,
     # with the source beside it on the same line
-    pill_f = font(HELV, 34, 1)
-    label, pill_w = ("LIVE", 120) if latest else ("EARLIER", 190)
-    d.rounded_rectangle((M, 70, M + pill_w, 122), radius=10, fill=RED if latest else RULE)
+    pill_f, title_f = font(HELV, 42, 1), font(HELV, 50, 1)   # largest that keeps one line
+    label = "LIVE" if latest else "EARLIER"
+    pill_w = int(d.textlength(label, font=pill_f)) + 50
+    d.rounded_rectangle((M, 64, M + pill_w, 128), radius=12, fill=RED if latest else RULE)
     d.text((M + pill_w // 2, 96), label, font=pill_f, fill=(255, 255, 255), anchor="mm")
-    d.text((M + pill_w + 25, 96), "New York Times live updates", font=font(HELV, 40, 1), fill=FG, anchor="lm")
-    d.line((M, 150, W - M, 150), fill=RULE, width=2)
+    d.text((M + pill_w + 25, 96), "New York Times live updates", font=title_f, fill=FG, anchor="lm")
+    d.line((M, 160, W - M, 160), fill=RULE, width=2)
 
-    y = 190
+    y = 200
     if post:
         meta_f = font(HELV, 44)
         line = meta(post)
