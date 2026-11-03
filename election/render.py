@@ -93,7 +93,7 @@ def render(post, out_path, latest=True):
         y += 84
         # One text size on every screen; a long post is cut off with "…"
         # rather than shrunk, so the four screens match.
-        head_f, body_f = font(GEORGIA_B, 78), font(GEORGIA, 68)
+        head_f, body_f = font(GEORGIA_B, 86), font(GEORGIA, 76)
         if post.get("headline"):
             y, _ = draw_block(d, y, wrap(d, post["headline"], head_f, width), head_f, FG, 1.14, bottom)
             y += 24
