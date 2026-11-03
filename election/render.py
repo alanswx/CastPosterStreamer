@@ -117,9 +117,6 @@ def render(post, out_path, latest=True):
                 break
             y += 26
 
-    stamp = datetime.now().strftime("%-I:%M %p").lower()
-    d.text((W - M, H - 50), f"updated {stamp}", font=font(HELV, 26), fill=MUTED, anchor="rs")
-
     img.rotate(90, expand=True).save(out_path, "JPEG", quality=90)
 
 
