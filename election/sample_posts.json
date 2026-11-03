@@ -1,0 +1,8 @@
+{"posts": [
+ {"time": "2026-11-03T02:01:07Z", "author": "A. Reporter", "tagline": "reporting from Des Moines", "headline": "",
+  "paragraphs": ["SAMPLE TEXT FOR LAYOUT. This is placeholder copy standing in for the newest live-blog post, set at the size it will appear on the barn screen so we can judge whether it reads from across the room.",
+                 "A second paragraph follows here, continuing the update with a few more sentences of filler so that the slide shows how longer posts wrap and where they get trimmed with an ellipsis if they run past the space available."]},
+ {"time": "2026-11-03T01:59:34Z", "author": "B. Writer", "tagline": "", "headline": "Sample headline for an earlier post in the feed", "paragraphs": ["Filler."]},
+ {"time": "2026-11-03T01:42:04Z", "author": "C. Correspondent", "tagline": "reporting from Atlanta", "headline": "", "paragraphs": ["An earlier update without a headline shows its first lines here instead, in smaller type."]},
+ {"time": "2026-11-03T01:40:54Z", "author": "D. Editor", "tagline": "", "headline": "Another earlier headline, long enough to need two lines on the slide", "paragraphs": ["Filler."]}
+]}
