@@ -25,8 +25,9 @@ REPO = os.path.dirname(HERE)
 OUT = os.path.join(HERE, "out")
 PORT = 5055
 HOST_IP = sys.argv[1] if len(sys.argv) > 1 else "192.168.4.41"
-# Newest post on Barn One, the ones before it on Two, Three and Four.
-SCREENS = ['Barn One 32" QLED', 'Barn Two 32" QLED', 'Barn Three 32" QLED', 'Barn Four 32" QLED']
+# Newest post on the left, older to the right. The barn's screens hang
+# left to right as One, Three, Four, Two (not in name order).
+SCREENS = ['Barn One 32" QLED', 'Barn Three 32" QLED', 'Barn Four 32" QLED', 'Barn Two 32" QLED']
 REFRESH_SECONDS = 600        # re-send even if nothing changed
 # The party ends at 23:00. The barn's power schedule is set to turn the
 # screens off then, so stop casting just before (a cast would wake them),
