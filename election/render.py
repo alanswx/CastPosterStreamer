@@ -14,7 +14,8 @@ from PIL import Image, ImageDraw, ImageFont
 HERE = os.path.dirname(os.path.abspath(__file__))
 W, H = 1080, 1920
 M = 56                       # side margin
-BG, FG, MUTED, RED, RULE = (16, 16, 18), (242, 242, 240), (150, 154, 160), (214, 32, 39), (60, 60, 64)
+BG, FG, MUTED, RED, RULE = (255, 255, 255), (18, 18, 18), (110, 110, 115), (214, 32, 39), (200, 200, 204)
+PILL = (70, 70, 74)          # the EARLIER tag; white text on it stays readable
 
 GEORGIA = "/System/Library/Fonts/Supplemental/Georgia.ttf"
 GEORGIA_B = "/System/Library/Fonts/Supplemental/Georgia Bold.ttf"
@@ -66,7 +67,7 @@ def draw_block(d, y, lines, f, fill, leading, max_y):
     return y, False
 
 
-def render(post, out_path, latest=True):
+def render(post, out_path, latest=True, source="New York Times"):
     """One post per screen: the newest on Barn One, the ones before it on the others."""
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img)
@@ -78,9 +79,9 @@ def render(post, out_path, latest=True):
     pill_f, title_f = font(HELV, 58, 1), font(HELV, 72, 1)   # largest that keeps one line
     label = "LIVE" if latest else "EARLIER"
     pill_w = int(d.textlength(label, font=pill_f)) + 60
-    d.rounded_rectangle((M, 56, M + pill_w, 136), radius=14, fill=RED if latest else RULE)
+    d.rounded_rectangle((M, 56, M + pill_w, 136), radius=14, fill=RED if latest else PILL)
     d.text((M + pill_w // 2, 96), label, font=pill_f, fill=(255, 255, 255), anchor="mm")
-    d.text((M + pill_w + 30, 96), "New York Times", font=title_f, fill=FG, anchor="lm")
+    d.text((M + pill_w + 30, 96), source, font=title_f, fill=FG, anchor="lm")
     d.line((M, 172, W - M, 172), fill=RULE, width=2)
 
     y = 212
