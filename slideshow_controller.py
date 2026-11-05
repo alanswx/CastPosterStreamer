@@ -35,6 +35,7 @@ class SlideshowController:
         self.image_server = get_image_server()
         self.slideshow_thread = None
         self.is_slideshow_running = False
+        self.slideshow_run_id = 0  # which _slideshow_loop is the current one
         self.current_image_index = 0
         self.current_images = {}  # device_uuid -> current_image_path
         
@@ -171,7 +172,8 @@ class SlideshowController:
         with self._lock:
             self.is_slideshow_running = True
             self.current_image_index = 0
-            self.slideshow_thread = gevent.spawn(self._slideshow_loop)
+            self.slideshow_run_id += 1
+            self.slideshow_thread = gevent.spawn(self._slideshow_loop, self.slideshow_run_id)
         
         self.logger.info(f"Started slideshow with {len(images)} images and {len(enabled_devices)} devices")
         self._record_play(directory)
@@ -206,14 +208,22 @@ class SlideshowController:
         if self.socketio:
             self.socketio.emit('slideshow_stopped')
     
-    def _slideshow_loop(self):
-        """Main slideshow loop that runs in a background thread."""
+    def _slideshow_loop(self, run_id):
+        """Main slideshow loop that runs in a background thread.
+
+        stop_slideshow() only waits 5 seconds, and this loop can be asleep for
+        the whole interval. If a new show starts meanwhile, is_slideshow_running
+        is True again by the time this wakes, so that flag alone would keep it
+        casting its old show alongside the new one; those images 404 because the
+        image server has moved on, which shows the Chromecast splash screen.
+        run_id tells a replaced loop to exit.
+        """
         directory = self.settings_manager.get_selected_directory()
         
         # Send initial images
         first_run = True
         
-        while self.is_slideshow_running:
+        while self.is_slideshow_running and run_id == self.slideshow_run_id:
             try:
                 # Get current images and devices
                 images = self.get_images_in_directory(directory)
@@ -249,6 +259,10 @@ class SlideshowController:
                     self.socketio.emit('error', {'message': f'Slideshow error: {str(e)}'})
                 self._sleep(5)  # Wait before retrying
         
+        # A replaced loop must not mark the show that replaced it as stopped.
+        if run_id != self.slideshow_run_id:
+            return
+
         # Slideshow stopped
         with self._lock:
             self.is_slideshow_running = False
